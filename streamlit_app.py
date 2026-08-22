@@ -45,8 +45,8 @@ from options_agent.journal_source import (  # noqa: E402
 from options_agent.nodes.trade_journal import TradeJournal  # noqa: E402
 
 st.set_page_config(
-    page_title="Alpaca Options Agent",
-    page_icon="📉",
+    page_title="ATA",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -198,7 +198,7 @@ html(
     f'<div style="margin-bottom:14px">'
     f'<h1 style="font-family:var(--font-display);font-weight:800;font-size:1.6rem;'
     f'letter-spacing:0.06em;text-transform:uppercase;color:var(--secondary);'
-    f'margin:0" class="oa-glow-secondary">Autonomous Options Agent</h1>'
+    f'margin:0" class="oa-glow-secondary">Alpaca Trading Agent</h1>'
     f'<p class="oa-sub" style="margin-top:4px">Defined-risk credit spreads on '
     f'{T.esc(", ".join(config.underlyings))}. Every position passes a nine-rule '
     f'deterministic risk gate — no language model in the decision path.</p></div>'

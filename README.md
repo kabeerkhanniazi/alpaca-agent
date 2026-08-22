@@ -156,9 +156,26 @@ command can never place an order.
 ./venv/bin/streamlit run streamlit_app.py
 ```
 
-Four panels: live portfolio with aggregate Greeks and headroom bars against the
-gate's limits, performance stats, current IV regime per underlying, and the trade
-journal — including every rejection with its full rule-by-rule breakdown.
+A market-status banner at the top shows **OPEN**/**CLOSED** with a live countdown
+to the next bell, then four panels:
+
+- **Portfolio** — open positions, aggregate Greeks, and headroom bars showing how
+  close the book is to the limits that would stop it trading.
+- **Performance** — a one-line trade summary (orders submitted / positions closed
+  / realized P&L), a cumulative realized-P&L curve with best, worst and average
+  trade, and a breakdown of which rule is rejecting the most.
+- **Market** — spot, ATM IV, IV rank and regime per underlying.
+- **Trade journal** — recent activity, fills and exits, raw records, and a
+  **Rejections** tab showing every trade the gate blocked with its full
+  rule-by-rule arithmetic.
+
+The P&L curve plots **realized** P&L only. Marking open positions to market would
+make the line jump on quote noise and would flatter a premium-selling strategy,
+where an open spread looks like a winner right up until it isn't. Dry-run cycles
+are excluded from every count and labelled separately.
+
+The dashboard's pure helpers live in `options_agent/dashboard_utils.py` so they
+are unit-tested without a Streamlit runtime (24 tests).
 
 ### Scheduling
 
@@ -177,7 +194,7 @@ than a badly-timed trade — and holidays and half-days are handled for free.
 ## Tests
 
 ```bash
-./venv/bin/python -m pytest tests/ -q                        # 181 tests
+./venv/bin/python -m pytest tests/ -q                        # 212 tests
 ./venv/bin/python -m pytest tests/ -q -m "not integration"   # fully offline
 ```
 
@@ -200,6 +217,7 @@ options_agent/
   broker.py          the only module that talks to Alpaca; retry policy lives here
   iv.py              IV rank, regime, OCC symbol parsing
   state.py           the state dict passed between nodes
+  dashboard_utils.py pure helpers for the dashboard (testable without Streamlit)
   graph.py           LangGraph wiring
   nodes/
     analyst.py             spot, technicals, IV regime
@@ -210,7 +228,7 @@ options_agent/
     executor.py            multi-leg orders, idempotent
     trade_journal.py       JSONL logging + analytics
 config/              risk_config.json, options_config.json
-tests/               181 tests
+tests/               212 tests
 cron_runner.py       one scheduled cycle
 streamlit_app.py     dashboard
 ta-base/             upstream TradingAgents, local reference only (not committed)

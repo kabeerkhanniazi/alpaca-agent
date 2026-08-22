@@ -22,6 +22,13 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from options_agent.config import ConfigError, load_config  # noqa: E402
+from options_agent.dashboard_utils import (  # noqa: E402
+    build_pnl_series,
+    format_countdown,
+    is_rejection,
+    money,
+    rejection_reason,
+)
 from options_agent.nodes.trade_journal import TradeJournal  # noqa: E402
 
 st.set_page_config(
@@ -102,10 +109,25 @@ def get_market_state():
     return rows
 
 
-def money(value, decimals: int = 2) -> str:
-    if value is None:
-        return "—"
-    return f"${value:,.{decimals}f}"
+@st.cache_data(ttl=20)
+def get_clock_state():
+    """Market open/closed plus the next open and close, from Alpaca's clock.
+
+    Cached briefly rather than not at all: the page reruns on every interaction
+    and the clock does not change second to second. A short TTL keeps the
+    countdown honest without one API call per widget.
+    """
+    from options_agent.broker import Broker
+
+    broker = Broker.from_config(get_config())
+    clock = broker.get_clock()
+    return {
+        "is_open": bool(clock.is_open),
+        "timestamp": clock.timestamp,
+        "next_open": getattr(clock, "next_open", None),
+        "next_close": getattr(clock, "next_close", None),
+    }
+
 
 
 def render_error(exc: Exception) -> None:
@@ -132,6 +154,40 @@ except ConfigError as exc:
 
 journal = TradeJournal(config.paths["journal"])
 stats = journal.compute_stats()
+
+# Read the journal once and share it: the P&L chart, the trade-count summary and
+# the journal panel all draw from the same list, and re-reading the file three
+# times per rerun would be wasteful and could show inconsistent slices.
+events_all = journal.load_recent(limit=2000)
+
+# --------------------------------------------------------- market status
+
+try:
+    clock = get_clock_state()
+    now = clock["timestamp"]
+
+    status_col, countdown_col, session_col = st.columns([2, 2, 3])
+
+    if clock["is_open"]:
+        status_col.success("### 🟢 Market OPEN")
+        if clock["next_close"]:
+            countdown_col.metric("Closes in", format_countdown(clock["next_close"] - now))
+            session_col.caption(
+                f"Session ends {clock['next_close']:%H:%M %Z on %a %d %b}. "
+                "The agent runs a cycle every 5 minutes until then."
+            )
+    else:
+        status_col.error("### 🔴 Market CLOSED")
+        if clock["next_open"]:
+            countdown_col.metric("Opens in", format_countdown(clock["next_open"] - now))
+            session_col.caption(
+                f"Next session {clock['next_open']:%H:%M %Z on %a %d %b}. "
+                "Scheduled cycles no-op until the bell."
+            )
+except Exception as exc:  # noqa: BLE001 — a clock failure must not blank the page
+    st.warning(f"Could not read market clock: {exc}")
+
+st.divider()
 
 with st.sidebar:
     st.header("Agent")
@@ -236,6 +292,55 @@ perf[5].metric(
     help=f"{stats['approvals']} approved / {stats['rejections']} rejected.",
 )
 
+# A one-line plain-language summary above the detail, so the headline numbers
+# are readable without parsing six metric tiles.
+_closed = stats["positions_closed"]
+_filled = stats["orders_filled"]
+_pnl = stats["realized_pnl"]
+_dry = stats["dry_runs"]
+
+summary = (
+    f"**{_filled}** order{'' if _filled == 1 else 's'} submitted · "
+    f"**{_closed}** position{'' if _closed == 1 else 's'} closed · "
+    f"**{money(_pnl)}** realized P&L"
+)
+if _dry:
+    # Never let dry runs read as real activity.
+    summary += f" · _{_dry} dry-run cycle{'' if _dry == 1 else 's'} (not counted)_"
+st.markdown(summary)
+
+# ---- Realized P&L over time ------------------------------------------------
+
+pnl_series = build_pnl_series(events_all)
+
+if pnl_series.empty:
+    st.info(
+        "No closed positions yet, so there is no realized P&L to plot. "
+        "The curve starts once the first spread is closed — at the 50% profit "
+        "target, the stop, or the 2-DTE floor."
+    )
+else:
+    chart_col, detail_col = st.columns([3, 1])
+
+    with chart_col:
+        st.caption("Cumulative realized P&L (closed positions only)")
+        indexed = pnl_series.set_index("Closed at")[["Cumulative P&L"]]
+        st.line_chart(indexed, height=260)
+
+    with detail_col:
+        best = pnl_series["Trade P&L"].max()
+        worst = pnl_series["Trade P&L"].min()
+        st.metric("Best trade", money(best))
+        st.metric("Worst trade", money(worst))
+        st.metric("Avg per trade", money(pnl_series["Trade P&L"].mean()))
+
+    with st.expander("Per-trade breakdown"):
+        st.dataframe(
+            pnl_series.assign(**{"Closed at": pnl_series["Closed at"].dt.strftime("%Y-%m-%d %H:%M")}),
+            width="stretch",
+            hide_index=True,
+        )
+
 if stats["rejections_by_rule"]:
     st.caption("Which rule is doing the work — rejections by rule")
     rejects = pd.DataFrame(
@@ -274,7 +379,7 @@ st.divider()
 st.subheader("Trade journal")
 
 tabs = st.tabs(["Recent activity", "Rejections", "Fills & exits", "Raw"])
-events = journal.load_recent(limit=200)
+events = events_all[:200]
 
 with tabs[0]:
     if not events:
@@ -296,25 +401,64 @@ with tabs[0]:
         st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 with tabs[1]:
-    rejections = [e for e in events if e.get("event_type") == "trade_rejected"]
+    rejections = [e for e in events if is_rejection(e)]
+
     if not rejections:
-        st.info("No rejections recorded yet.")
+        st.info(
+            "No rejections recorded yet. Every spread the gate has seen so far "
+            "passed all nine rules."
+        )
     else:
         st.caption(
-            "Every refusal, with the rule that caused it and the numbers behind it. "
-            "This is the risk gate working."
+            "Every trade the risk gate blocked, with the rule that stopped it and "
+            "the numbers behind the decision. This is the gate doing its job."
         )
+
+        # Summary table first — scannable at a glance, before the detail.
+        summary_rows = []
+        for event in rejections:
+            spread = event.get("spread") or {}
+            summary_rows.append({
+                "Time": event.get("timestamp", "")[:19].replace("T", " "),
+                "Ticker": event.get("ticker", ""),
+                "Strikes": (
+                    f"{spread.get('sell_strike'):g}/{spread.get('buy_strike'):g}"
+                    if spread.get("sell_strike") is not None
+                    and spread.get("buy_strike") is not None else "—"
+                ),
+                "Credit": spread.get("net_credit"),
+                "Max loss": spread.get("max_loss"),
+                "Blocked by": ", ".join(event.get("failing_rules", [])) or "—",
+            })
+        st.dataframe(pd.DataFrame(summary_rows), width="stretch", hide_index=True)
+
+        st.caption(f"Showing rule-by-rule detail for the {min(15, len(rejections))} most recent")
         for event in rejections[:15]:
             spread = event.get("spread") or {}
+            blocked_by = ", ".join(event.get("failing_rules", [])) or "no spread proposed"
             label = (
+                f"{event.get('timestamp', '')[:19].replace('T', ' ')} · "
                 f"{event.get('ticker', '?')} "
                 f"{spread.get('sell_strike', '?')}/{spread.get('buy_strike', '?')} — "
-                f"{', '.join(event.get('failing_rules', [])) or 'no spread'}"
+                f"blocked by {blocked_by}"
             )
-            with st.expander(f"{event.get('timestamp', '')[:19].replace('T', ' ')} · {label}"):
-                for check in event.get("checks", []):
-                    icon = "✅" if check.get("passed") else "❌"
-                    st.markdown(f"{icon} **{check.get('rule')}** — {check.get('detail')}")
+            with st.expander(label):
+                st.markdown(f"**Reason:** {rejection_reason(event)}")
+
+                checks = event.get("checks", [])
+                if checks:
+                    st.markdown("**Rule-by-rule**")
+                    for check in checks:
+                        icon = "✅" if check.get("passed") else "❌"
+                        observed = check.get("observed")
+                        limit = check.get("limit")
+                        suffix = (
+                            f"  \n&nbsp;&nbsp;&nbsp;&nbsp;`observed: {observed}` · `limit: {limit}`"
+                            if observed is not None or limit is not None else ""
+                        )
+                        st.markdown(f"{icon} **{check.get('rule')}** — {check.get('detail')}{suffix}")
+                else:
+                    st.caption("No rule-by-rule breakdown recorded for this entry.")
 
 with tabs[2]:
     trades = [

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "options-agent"
+version = "1.0.0"
+description = "Autonomous defined-risk options trading agent for Alpaca"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "alpaca-py>=0.44.0",
+    "langgraph>=1.2.0",
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    "python-dotenv>=1.0.0",
+    "streamlit>=1.30.0",
+    "plotly>=5.18.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4.0", "pytest-mock>=3.12.0"]
+
+[tool.setuptools.packages.find]
+include = ["options_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: touches the live Alpaca API; deselect with -m 'not integration'",
+]

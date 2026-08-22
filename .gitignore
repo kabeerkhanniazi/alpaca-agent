@@ -1,0 +1,26 @@
+# Secrets — never commit
+.env
+.env.local
+
+# Virtualenv
+venv/
+.venv/
+
+# Vendored upstream clone (pulled via setup instructions, not committed)
+ta-base/
+
+# Runtime output
+logs/
+data/
+results/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# WSL / Windows cruft
+*:Zone.Identifier
+.DS_Store

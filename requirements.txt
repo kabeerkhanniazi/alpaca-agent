@@ -1,0 +1,20 @@
+# Broker + market data
+alpaca-py>=0.44.0
+
+# Graph orchestration (deterministic nodes; no LLM in this agent)
+langgraph>=1.2.0
+
+# Data handling
+pandas>=2.2.0
+numpy>=1.26.0
+
+# Config
+python-dotenv>=1.0.0
+
+# Dashboard
+streamlit>=1.30.0
+plotly>=5.18.0
+
+# Tests
+pytest>=7.4.0
+pytest-mock>=3.12.0

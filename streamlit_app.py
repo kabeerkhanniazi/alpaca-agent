@@ -1,13 +1,18 @@
 """Live dashboard for the options agent.
 
-Reads two sources: the Alpaca account for current positions and Greeks, and the
-JSONL trade journal for history. Deliberately read-only — nothing here can place
-or cancel an order, so a dashboard left open in a browser tab can never move the
-book.
+Read-only by construction. Nothing on this page can place, cancel or stop a
+trade — the mockup's "EXECUTE LIVE" and "KILL SWITCH" controls are rendered as
+status pills, not buttons, because this is deployed publicly and a stranger's
+click must not reach the broker. The only interactive controls are the refresh
+button, the journal tabs, and the chart.
 
-The rejection panel is the one worth looking at. Anyone can build a bot that
-shows its winners; showing the trades the risk gate refused, and the exact rule
-and numbers behind each refusal, is what demonstrates the gate is real.
+Data comes from two places: Alpaca for account, positions and chain state, and
+the trade journal for history. Either can be missing — a deployment without
+credentials still renders every journal-derived panel rather than a wall of
+errors. See options_agent/journal_source.py for how the journal is resolved.
+
+Visual language is ported from docs/design/alpaca.html. The stylesheet lives in
+options_agent/dashboard_theme.py and is injected once, below.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from options_agent import dashboard_theme as T  # noqa: E402
 from options_agent.config import ConfigError, load_config  # noqa: E402
 from options_agent.dashboard_utils import (  # noqa: E402
     build_pnl_series,
@@ -29,54 +35,82 @@ from options_agent.dashboard_utils import (  # noqa: E402
     money,
     rejection_reason,
 )
+from options_agent.journal_source import (  # noqa: E402
+    SOURCE_LOCAL,
+    SOURCE_NONE,
+    SOURCE_REMOTE,
+    SOURCE_SNAPSHOT,
+    load_journal,
+)
 from options_agent.nodes.trade_journal import TradeJournal  # noqa: E402
 
 st.set_page_config(
-    page_title="Alpaca Trading Agent",
+    page_title="Alpaca Options Agent",
     page_icon="📉",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-REFRESH_SECONDS = 60
+st.markdown(T.CSS, unsafe_allow_html=True)
 
 
-# --------------------------------------------------------------- helpers
+def html(markup: str) -> None:
+    """Shorthand for injecting a rendered component."""
+    st.markdown(markup, unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------- data
 
 @st.cache_resource
 def get_config():
-    return load_config()
+    return load_config(with_credentials=False)
+
+
+@st.cache_data(ttl=60)
+def get_journal_payload():
+    """Journal events, from the freshest source available."""
+    config = get_config()
+    return load_journal(local_path=config.paths["journal"])
 
 
 @st.cache_data(ttl=30)
 def get_account_snapshot():
-    """Account and positions, refreshed at most every 30 seconds."""
+    """Account and positions. Returns None when Alpaca cannot be reached.
+
+    Credentials are resolved here rather than at import time so a deployment
+    without them still renders — the live panels report themselves unavailable
+    and every journal-derived panel works exactly as normal.
+    """
     from options_agent.broker import Broker
+    from options_agent.config import load_credentials
     from options_agent.nodes.position_manager import build_portfolio_state
 
     config = get_config()
-    broker = Broker.from_config(config)
+    broker = Broker(load_credentials())
 
     spots = {}
     for ticker in config.underlyings:
         try:
             spots[ticker] = broker.get_spot_price(ticker)
-        except Exception:  # noqa: BLE001 — a missing quote must not blank the page
+        except Exception:  # noqa: BLE001 — one missing quote must not blank the page
             spots[ticker] = None
 
-    portfolio = build_portfolio_state(broker, config, {k: v for k, v in spots.items() if v})
+    portfolio = build_portfolio_state(config=config, broker=broker,
+                                      spot_prices={k: v for k, v in spots.items() if v})
     return portfolio, spots
 
 
 @st.cache_data(ttl=30)
 def get_market_state():
-    """Current IV rank and regime per underlying, for the market panel."""
+    """IV rank and regime per underlying."""
     from datetime import timedelta
 
     from options_agent.broker import Broker
+    from options_agent.config import load_credentials
     from options_agent.iv import atm_implied_volatility, compute_iv_rank
 
     config = get_config()
-    broker = Broker.from_config(config)
+    broker = Broker(load_credentials())
     rows = []
 
     for ticker in config.underlyings:
@@ -90,37 +124,26 @@ def get_market_state():
                 expiry_from=today + timedelta(days=config.min_dte),
                 expiry_to=today + timedelta(days=config.max_dte),
             )
-            atm_iv = atm_implied_volatility(chain, spot)
-            closes = broker.get_daily_bars(ticker)["close"].tolist()
-            info = compute_iv_rank(ticker, atm_iv, closes, config.paths["iv_history"], config.iv)
-            rows.append({
-                "Ticker": ticker,
-                "Spot": spot,
-                "ATM IV": info["atm_iv"],
-                "IV Rank": info["iv_rank"],
-                "Regime": info["regime"],
-                "Source": info["iv_rank_source"],
-            })
+            info = compute_iv_rank(
+                ticker, atm_implied_volatility(chain, spot),
+                broker.get_daily_bars(ticker)["close"].tolist(),
+                config.paths["iv_history"], config.iv,
+            )
+            rows.append({"ticker": ticker, "spot": spot, **info})
         except Exception as exc:  # noqa: BLE001
-            rows.append({
-                "Ticker": ticker, "Spot": None, "ATM IV": None,
-                "IV Rank": None, "Regime": "ERROR", "Source": str(exc)[:60],
-            })
+            rows.append({"ticker": ticker, "spot": None, "atm_iv": None,
+                         "iv_rank": None, "regime": "UNKNOWN",
+                         "iv_rank_source": str(exc)[:40]})
     return rows
 
 
 @st.cache_data(ttl=20)
 def get_clock_state():
-    """Market open/closed plus the next open and close, from Alpaca's clock.
-
-    Cached briefly rather than not at all: the page reruns on every interaction
-    and the clock does not change second to second. A short TTL keeps the
-    countdown honest without one API call per widget.
-    """
+    """Market open/closed plus next open and close, from Alpaca's clock."""
     from options_agent.broker import Broker
+    from options_agent.config import load_credentials
 
-    broker = Broker.from_config(get_config())
-    clock = broker.get_clock()
+    clock = Broker(load_credentials()).get_clock()
     return {
         "is_open": bool(clock.is_open),
         "timestamp": clock.timestamp,
@@ -129,22 +152,24 @@ def get_clock_state():
     }
 
 
+def safe(fn, *args, **kwargs):
+    """Call a live-data fetcher, returning (value, error) instead of raising."""
+    try:
+        return fn(*args, **kwargs), None
+    except Exception as exc:  # noqa: BLE001
+        return None, exc
 
-def render_error(exc: Exception) -> None:
-    st.error(f"Could not reach Alpaca: {exc}")
-    st.caption(
-        "Check that `.env` holds a valid ALPACA_API_KEY and ALPACA_SECRET_KEY, "
-        "and that the account has options trading enabled."
+
+def unavailable(message: str) -> str:
+    """A neutral placeholder for a panel whose live data could not be fetched."""
+    return (
+        f'<div class="oa-card oa-accent-neutral">'
+        f'<div class="oa-card-head"><span class="oa-label">Live data unavailable</span></div>'
+        f'<p class="oa-sub" style="margin-top:2px">{T.esc(message)}</p></div>'
     )
 
 
-# ----------------------------------------------------------------- header
-
-st.title(" Autonomous Trading Agent")
-st.caption(
-    "Defined-risk credit spreads on SPY, QQQ and IWM. Every position passes a "
-    "nine-rule deterministic risk gate — no language model anywhere in the decision path."
-)
+# --------------------------------------------------------------- config
 
 try:
     config = get_config()
@@ -152,166 +177,285 @@ except ConfigError as exc:
     st.error(f"Configuration problem: {exc}")
     st.stop()
 
+payload = get_journal_payload()
+events_all = list(reversed(payload.events))          # newest first
 journal = TradeJournal(config.paths["journal"])
-stats = journal.compute_stats()
+stats = TradeJournal.stats_from_events(payload.events)
 
-# Read the journal once and share it: the P&L chart, the trade-count summary and
-# the journal panel all draw from the same list, and re-reading the file three
-# times per rerun would be wasteful and could show inconsistent slices.
-events_all = journal.load_recent(limit=2000)
+portfolio_result, portfolio_error = safe(get_account_snapshot)
+portfolio, spots = portfolio_result if portfolio_result else (None, {})
+clock_state, clock_error = safe(get_clock_state)
 
-# --------------------------------------------------------- market status
+# ------------------------------------------------------------- header
 
-try:
-    clock = get_clock_state()
-    now = clock["timestamp"]
+# The mockup's top nav (Mainframe / Nodes / Liquidity / Risk) pointed nowhere.
+# In-page anchor jumps would be the honest replacement, but confirming they
+# actually scroll inside Streamlit's container needs a headless browser that is
+# not available here — and an unverified nav is exactly the dead link the design
+# brief rules out. The nav is dropped; the section ids below remain, so a shared
+# URL ending in #risk-gate still lands in the right place.
+html(
+    f'<div style="margin-bottom:14px">'
+    f'<h1 style="font-family:var(--font-display);font-weight:800;font-size:1.6rem;'
+    f'letter-spacing:0.06em;text-transform:uppercase;color:var(--secondary);'
+    f'margin:0" class="oa-glow-secondary">Autonomous Options Agent</h1>'
+    f'<p class="oa-sub" style="margin-top:4px">Defined-risk credit spreads on '
+    f'{T.esc(", ".join(config.underlyings))}. Every position passes a nine-rule '
+    f'deterministic risk gate — no language model in the decision path.</p></div>'
+)
 
-    status_col, countdown_col, session_col = st.columns([2, 2, 3])
+# ------------------------------------------------------- market banner
 
-    if clock["is_open"]:
-        status_col.success("### 🟢 Market OPEN")
-        if clock["next_close"]:
-            countdown_col.metric("Closes in", format_countdown(clock["next_close"] - now))
-            session_col.caption(
-                f"Session ends {clock['next_close']:%H:%M %Z on %a %d %b}. "
-                "The agent runs a cycle every 5 minutes until then."
-            )
+if clock_state:
+    now = clock_state["timestamp"]
+    is_open = clock_state["is_open"]
+    target = clock_state["next_close"] if is_open else clock_state["next_open"]
+    label = "Closes in" if is_open else "Opens in"
+
+    units: list[tuple[str, str]] = []
+    if target:
+        parts = format_countdown(target - now).split()
+        units = [(p[:-1], p[-1]) for p in parts if p != "now"]
+        session = (
+            f"Session ends {target:%H:%M %Z on %a %d %b}. "
+            "The agent runs a cycle every 5 minutes until then."
+            if is_open else
+            f"Next session {target:%H:%M %Z on %a %d %b}. "
+            "Scheduled cycles no-op until the bell."
+        )
     else:
-        status_col.error("### 🔴 Market CLOSED")
-        if clock["next_open"]:
-            countdown_col.metric("Opens in", format_countdown(clock["next_open"] - now))
-            session_col.caption(
-                f"Next session {clock['next_open']:%H:%M %Z on %a %d %b}. "
-                "Scheduled cycles no-op until the bell."
-            )
-except Exception as exc:  # noqa: BLE001 — a clock failure must not blank the page
-    st.warning(f"Could not read market clock: {exc}")
+        session = "Session boundary unknown."
+    html(T.market_banner(is_open, units, label, session))
+else:
+    html(
+        '<div class="oa-banner"><div class="oa-banner-left">'
+        '<div class="oa-orb">' + T.icon("block", size=26) + '</div><div>'
+        '<h2 class="oa-banner-title t-variant">MARKET STATUS UNAVAILABLE</h2>'
+        f'<p class="oa-banner-sub">{T.esc(str(clock_error)[:150])}</p>'
+        '</div></div></div>'
+    )
 
-st.divider()
+# ------------------------------------------------------------ sidebar
 
 with st.sidebar:
-    st.header("Agent")
-    st.metric("Underlyings", ", ".join(config.underlyings))
-    st.metric("Delta window", f"{config.delta_range[0]} to {config.delta_range[1]}")
-    st.metric("DTE window", f"{config.min_dte}–{config.max_dte} days")
-    st.metric("Max risk / trade", f"{config.max_loss_pct:.0%} of NAV")
-    st.metric("Kill-switch", f"−{config.kill_switch_pct:.0%} daily")
-    st.divider()
-    st.caption(f"Journal: `{config.paths['journal']}`")
-    st.caption(f"Refreshed {datetime.now().strftime('%H:%M:%S')}")
+    html(
+        '<div style="display:flex;align-items:center;gap:11px;margin-bottom:18px">'
+        '<div style="width:38px;height:38px;border-radius:9px;display:flex;'
+        'align-items:center;justify-content:center;background:var(--surface-container-high);'
+        'border:1px solid rgba(255,45,120,0.35)">' + T.icon("shield", "#ff2d78", 19) + '</div>'
+        '<div><div style="font-family:var(--font-display);font-weight:800;'
+        'font-size:1rem;color:var(--primary);letter-spacing:-0.01em">ALPACA AGENT</div>'
+        '<div class="oa-label" style="font-size:0.6rem">Read-only console</div></div></div>'
+    )
+
+    # Run mode, from the most recent cycle the agent actually logged.
+    cycles = [e for e in payload.events if e.get("event_type") == "cycle_summary"]
+    if cycles:
+        mode = str(cycles[-1].get("mode", "UNKNOWN")).upper().replace(" ", "-")
+        mode_tone = "primary" if mode == "LIVE" else "neutral"
+    else:
+        mode, mode_tone = "UNKNOWN", "neutral"
+
+    if portfolio:
+        drawdown = -min(0.0, portfolio["daily_pnl_pct"])
+        tripped = drawdown > config.kill_switch_pct
+        ks_text = (
+            f"KILL-SWITCH: {'TRIPPED' if tripped else 'ARMED'} "
+            f"· {drawdown:.2%} / {config.kill_switch_pct:.0%}"
+        )
+        ks_tone = "error" if tripped else "secondary"
+    else:
+        ks_text, ks_tone = f"KILL-SWITCH: ARMED · {config.kill_switch_pct:.0%} limit", "neutral"
+
+    # Status only — spans, not buttons. Nothing here can reach the broker.
+    html(T.pill_row([T.status_pill(f"MODE: {mode}", mode_tone),
+                     T.status_pill(ks_text, ks_tone)]))
+
+    rows = [
+        ("Underlyings", ", ".join(config.underlyings)),
+        ("Delta window", f"{config.delta_range[0]} to {config.delta_range[1]}"),
+        ("DTE window", f"{config.min_dte}–{config.max_dte} days"),
+        ("Max risk / trade", f"{config.max_loss_pct:.0%} of NAV"),
+        ("Portfolio delta cap", f"{config.max_portfolio_delta_pct:.0%} of NAV"),
+        ("Min credit", money(config.min_credit_usd)),
+    ]
+    html(
+        '<div class="oa-glass" style="padding:14px 16px">'
+        + "".join(
+            f'<div style="margin-bottom:11px"><div class="oa-label">{T.esc(k)}</div>'
+            f'<div style="font-family:var(--font-display);font-weight:600;'
+            f'font-size:0.92rem;color:var(--on-surface);overflow-wrap:anywhere">{T.esc(v)}</div></div>'
+            for k, v in rows
+        )
+        + '<div style="border-top:1px solid var(--outline-variant);padding-top:11px">'
+        '<div class="oa-label t-error">Kill-switch</div>'
+        f'<div style="font-family:var(--font-display);font-weight:800;font-size:1.25rem;'
+        f'color:var(--error)">−{config.kill_switch_pct:.0%} daily</div></div></div>'
+    )
+
+    source_tone = {
+        SOURCE_LOCAL: "secondary", SOURCE_REMOTE: "secondary",
+        SOURCE_SNAPSHOT: "tertiary", SOURCE_NONE: "neutral",
+    }[payload.source]
+    html(T.pill_row([T.status_pill(f"JOURNAL: {payload.source} · {payload.age_label}", source_tone)]))
+    st.caption(payload.detail)
+
     if st.button("Refresh now", width="stretch"):
         st.cache_data.clear()
         st.rerun()
 
-# ------------------------------------------------------------- portfolio
+# ---------------------------------------------------------- portfolio
 
-st.subheader("Portfolio")
-
-try:
-    portfolio, spots = get_account_snapshot()
-except Exception as exc:  # noqa: BLE001
-    render_error(exc)
-    portfolio, spots = None, {}
+html(T.section_heading("Portfolio", "portfolio"))
 
 if portfolio:
-    cols = st.columns(5)
-    cols[0].metric("Net liquidation", money(portfolio["nav"]))
-    cols[1].metric(
-        "Daily P&L",
-        money(portfolio["daily_pnl"]),
-        delta=f"{portfolio['daily_pnl_pct']:+.2%}",
-    )
-    cols[2].metric("Unrealized", money(portfolio["unrealized_pnl"]))
-    cols[3].metric("Open positions", portfolio["position_count"])
-    cols[4].metric("Buying power", money(portfolio["buying_power"], 0))
+    pnl_accent, pnl_class = T.pnl_classes(portfolio["daily_pnl"])
+    unreal_accent, unreal_class = T.pnl_classes(portfolio["unrealized_pnl"])
+    html(T.card_grid([
+        T.metric_card("Net liquidation", money(portfolio["nav"]), "primary",
+                      "t-primary", icon_name="bank", glow=True),
+        T.metric_card("Daily P&L", money(portfolio["daily_pnl"]), pnl_accent, pnl_class,
+                      sub=f"{portfolio['daily_pnl_pct']:+.2%}", icon_name="trend"),
+        T.metric_card("Unrealized", money(portfolio["unrealized_pnl"]), unreal_accent,
+                      unreal_class, icon_name="trend"),
+        T.metric_card("Open positions", str(portfolio["position_count"]), "tertiary",
+                      "t-tertiary", icon_name="box"),
+        T.metric_card("Buying power", money(portfolio["buying_power"], 0), "secondary",
+                      "t-on-surface", icon_name="cash"),
+    ]))
 
-    greeks = st.columns(4)
     delta_pct = portfolio["net_delta_dollars"] / portfolio["nav"] if portfolio["nav"] else 0
-    greeks[0].metric(
-        "Net delta",
-        money(portfolio["net_delta_dollars"], 0),
-        delta=f"{delta_pct:.1%} of NAV",
-        delta_color="off",
-    )
-    greeks[1].metric("Theta / day", money(portfolio["portfolio_theta"]))
-    greeks[2].metric("Vega", money(portfolio["portfolio_vega"]))
-    greeks[3].metric("Gamma", f"{portfolio['portfolio_gamma']:.4f}")
+    html(T.card_grid([
+        T.metric_card("Net delta", money(portfolio["net_delta_dollars"], 0), "neutral",
+                      "t-on-surface", sub=f"{delta_pct:.1%} of NAV", icon_name="gauge"),
+        T.metric_card("Theta / day", money(portfolio["portfolio_theta"]), "secondary",
+                      "t-secondary", icon_name="pulse"),
+        T.metric_card("Vega", money(portfolio["portfolio_vega"]), "neutral",
+                      "t-on-surface", icon_name="pulse"),
+        T.metric_card("Gamma", f"{portfolio['portfolio_gamma']:.4f}", "neutral",
+                      "t-on-surface", icon_name="pulse"),
+    ]))
 
-    # How close is the book to the limits that would stop it trading?
-    st.caption("Headroom against the gate's portfolio-level limits")
-    bars = st.columns(2)
     delta_limit = portfolio["nav"] * config.max_portfolio_delta_pct
-    bars[0].progress(
-        min(1.0, abs(portfolio["net_delta_dollars"]) / delta_limit) if delta_limit else 0.0,
-        text=f"Portfolio delta: {money(abs(portfolio['net_delta_dollars']), 0)} of {money(delta_limit, 0)} (Rule 3)",
-    )
+    used = abs(portfolio["net_delta_dollars"])
     loss_used = -min(0.0, portfolio["daily_pnl_pct"])
-    bars[1].progress(
-        min(1.0, loss_used / config.kill_switch_pct) if config.kill_switch_pct else 0.0,
-        text=f"Daily drawdown: {loss_used:.2%} of {config.kill_switch_pct:.0%} kill-switch (Rule 8)",
+    html(
+        '<div class="oa-glass" style="padding:16px 18px;margin-top:6px">'
+        '<div class="oa-label" style="margin-bottom:12px">Headroom against the gate\'s '
+        'portfolio limits</div>'
+        + T.headroom_bar("Portfolio delta · Rule 3", used,
+                         f"{money(used, 0)} of {money(delta_limit, 0)}",
+                         used / delta_limit if delta_limit else 0.0)
+        + T.headroom_bar("Daily drawdown · Rule 8", loss_used,
+                         f"{loss_used:.2%} of {config.kill_switch_pct:.0%}",
+                         loss_used / config.kill_switch_pct if config.kill_switch_pct else 0.0)
+        + "</div>"
     )
 
     if portfolio["open_positions"]:
-        frame = pd.DataFrame(portfolio["open_positions"])
-        display = frame[[
-            "symbol", "underlying", "strike", "expiry", "dte", "contracts",
-            "delta", "theta", "vega", "avg_entry_price", "current_price", "unrealized_pl",
-        ]].rename(columns={
-            "symbol": "Contract", "underlying": "Underlying", "strike": "Strike",
-            "expiry": "Expiry", "dte": "DTE", "contracts": "Qty", "delta": "Delta",
-            "theta": "Theta", "vega": "Vega", "avg_entry_price": "Entry",
-            "current_price": "Mark", "unrealized_pl": "Unrealized",
-        })
-        st.dataframe(display, width="stretch", hide_index=True)
+        rows = [[
+            f'<span class="oa-ticker">{T.esc(p["underlying"])}</span>',
+            T.esc(p["symbol"]), f'{p["strike"]:g}', T.esc(p["expiry"]),
+            str(p["dte"]), f'{p["contracts"]:g}', f'{p.get("delta", 0):.3f}',
+            f'{p.get("theta", 0):.3f}', money(p["avg_entry_price"]),
+            money(p["current_price"]),
+            f'<span class="{T.pnl_classes(p["unrealized_pl"])[1]}">'
+            f'{money(p["unrealized_pl"])}</span>',
+        ] for p in portfolio["open_positions"]]
+        html(T.table(
+            ["Underlying", "Contract", "Strike", "Expiry", "DTE", "Qty",
+             "Delta", "Theta", "Entry", "Mark", "Unrealized"],
+            rows, "Open positions",
+        ))
     else:
         st.info("No open positions. The agent opens at most one new spread per cycle.")
+else:
+    html(unavailable(
+        f"Alpaca account state could not be fetched — {str(portfolio_error)[:180]}. "
+        "Journal-derived panels below are unaffected."
+    ))
 
-st.divider()
+# ----------------------------------------------------------- risk gate
 
-# ------------------------------------------------------------ performance
+html(T.section_heading("Risk Gate", "risk-gate"))
 
-st.subheader("Performance")
+gate_events = [e for e in payload.events
+               if e.get("event_type") in ("trade_approved", "trade_rejected")]
+latest_checks = {c["rule"]: c for c in gate_events[-1].get("checks", [])} if gate_events else {}
 
-perf = st.columns(6)
-perf[0].metric(
-    "Win rate",
-    f"{stats['win_rate']:.0f}%" if stats["win_rate"] is not None else "—",
-    help="Closed positions only. Open positions have no realized outcome.",
-)
-perf[1].metric("Realized P&L", money(stats["realized_pnl"]))
-perf[2].metric("Positions closed", stats["positions_closed"])
-perf[3].metric(
-    "Orders filled",
-    stats["orders_filled"],
-    help=f"{stats['dry_runs']} dry-run cycles are excluded from this count.",
-)
-perf[4].metric("Avg credit", money(stats["avg_credit"]))
-perf[5].metric(
-    "Gate approval rate",
-    f"{stats['approval_rate']:.0f}%" if stats["approval_rate"] is not None else "—",
-    help=f"{stats['approvals']} approved / {stats['rejections']} rejected.",
-)
+RULES = [
+    ("R1", "R1_delta", "Short-leg delta cap", f"≤ {config.max_abs_delta:.2f}"),
+    ("R2", "R2_notional", "Max loss within budget", f"≤ {config.max_loss_pct:.0%} of NAV"),
+    ("R3", "R3_portfolio_delta", "Portfolio delta exposure", f"≤ {config.max_portfolio_delta_pct:.0%} of NAV"),
+    ("R4", "R4_min_premium", "Minimum credit", f"≥ {money(config.min_credit_usd)}"),
+    ("R5", "R5_duplicate", "No duplicate strike", "none open"),
+    ("R6", "R6_min_dte", "Minimum days to expiry", f"≥ {config.min_dte}d"),
+    ("R7", "R7_max_dte", "Maximum days to expiry", f"≤ {config.max_dte}d"),
+    ("R8", "R8_kill_switch", "Daily drawdown kill-switch", f"≤ {config.kill_switch_pct:.0%}"),
+    ("R9", "R9_buying_power", "Buying-power reserve", f"≥ {config.min_bp_reserve_pct:.0%}"),
+]
 
-# A one-line plain-language summary above the detail, so the headline numbers
-# are readable without parsing six metric tiles.
-_closed = stats["positions_closed"]
-_filled = stats["orders_filled"]
-_pnl = stats["realized_pnl"]
+rule_rows = []
+for number, key, name, threshold in RULES:
+    check = latest_checks.get(key)
+    if check is None:
+        state, observed = "idle", ""
+    else:
+        state = "pass" if check.get("passed") else "fail"
+        observed = "" if check.get("observed") is None else str(check["observed"])
+    rule_rows.append(T.rule_row(number, name, threshold, state, observed))
+
+if gate_events:
+    last = gate_events[-1]
+    verdict = "APPROVED" if last["event_type"] == "trade_approved" else "REJECTED"
+    tone = "secondary" if verdict == "APPROVED" else "error"
+    caption = (
+        f"Most recent evaluation: {last.get('ticker', '?')} · {verdict} · "
+        f"{str(last.get('timestamp', ''))[:19].replace('T', ' ')}"
+    )
+    html(T.pill_row([T.status_pill(f"LAST SPREAD: {verdict}", tone)]))
+    st.caption(caption)
+else:
+    st.caption("No spread has been evaluated yet — thresholds shown, no verdict.")
+
+html(T.rule_grid(rule_rows))
+
+# --------------------------------------------------------- performance
+
+html(T.section_heading("Performance", "performance"))
+
+approval = (f"{stats['approval_rate']:.0f}%" if stats["approval_rate"] is not None else "—")
+win = (f"{stats['win_rate']:.0f}%" if stats["win_rate"] is not None else "—")
+realized_accent, realized_class = T.pnl_classes(stats["realized_pnl"])
+
+html(T.card_grid([
+    T.metric_card("Win rate", win, "secondary", "t-secondary",
+                  sub="Closed positions only", icon_name="check"),
+    T.metric_card("Realized P&L", money(stats["realized_pnl"]), realized_accent,
+                  realized_class, icon_name="trend"),
+    T.metric_card("Positions closed", str(stats["positions_closed"]), "neutral",
+                  "t-on-surface", icon_name="box"),
+    T.metric_card("Orders filled", str(stats["orders_filled"]), "neutral", "t-on-surface",
+                  sub=f"{stats['dry_runs']} dry-run cycles excluded", icon_name="box"),
+    T.metric_card("Avg credit", money(stats["avg_credit"]), "tertiary", "t-tertiary",
+                  icon_name="cash"),
+    T.metric_card("Gate approval rate", approval, "primary", "t-primary",
+                  sub=f"{stats['approvals']} approved / {stats['rejections']} rejected",
+                  icon_name="shield"),
+]))
+
 _dry = stats["dry_runs"]
-
 summary = (
-    f"**{_filled}** order{'' if _filled == 1 else 's'} submitted · "
-    f"**{_closed}** position{'' if _closed == 1 else 's'} closed · "
-    f"**{money(_pnl)}** realized P&L"
+    f"**{stats['orders_filled']}** order{'' if stats['orders_filled'] == 1 else 's'} "
+    f"submitted · **{stats['positions_closed']}** "
+    f"position{'' if stats['positions_closed'] == 1 else 's'} closed · "
+    f"**{money(stats['realized_pnl'])}** realized P&L"
 )
 if _dry:
-    # Never let dry runs read as real activity.
     summary += f" · _{_dry} dry-run cycle{'' if _dry == 1 else 's'} (not counted)_"
 st.markdown(summary)
 
-# ---- Realized P&L over time ------------------------------------------------
-
-pnl_series = build_pnl_series(events_all)
+pnl_series = build_pnl_series(payload.events)
 
 if pnl_series.empty:
     st.info(
@@ -321,152 +465,167 @@ if pnl_series.empty:
     )
 else:
     chart_col, detail_col = st.columns([3, 1])
-
     with chart_col:
-        st.caption("Cumulative realized P&L (closed positions only)")
-        indexed = pnl_series.set_index("Closed at")[["Cumulative P&L"]]
-        st.line_chart(indexed, height=260)
+        import plotly.graph_objects as go
+
+        fig = go.Figure(go.Scatter(
+            x=pnl_series["Closed at"], y=pnl_series["Cumulative P&L"],
+            mode="lines+markers", line=dict(color=T.TOKENS["secondary"], width=2.4),
+            marker=dict(size=6, color=T.TOKENS["secondary"]),
+            fill="tozeroy", fillcolor="rgba(0,255,204,0.09)",
+            hovertemplate="%{x|%d %b %H:%M}<br>$%{y:,.2f}<extra></extra>",
+        ))
+        fig.update_layout(
+            height=270, margin=dict(l=0, r=0, t=26, b=0),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Space Grotesk, sans-serif",
+                      color=T.TOKENS["on_surface_variant"], size=11),
+            title=dict(text="Cumulative realized P&L", font=dict(size=12)),
+            xaxis=dict(gridcolor="rgba(48,40,64,0.7)", zeroline=False),
+            yaxis=dict(gridcolor="rgba(48,40,64,0.7)", zeroline=True,
+                       zerolinecolor="rgba(90,80,104,0.8)", tickprefix="$"),
+            showlegend=False, hovermode="x unified",
+        )
+        st.plotly_chart(fig, config={"displayModeBar": False}, width="stretch")
 
     with detail_col:
         best = pnl_series["Trade P&L"].max()
         worst = pnl_series["Trade P&L"].min()
-        st.metric("Best trade", money(best))
-        st.metric("Worst trade", money(worst))
-        st.metric("Avg per trade", money(pnl_series["Trade P&L"].mean()))
+        avg = pnl_series["Trade P&L"].mean()
+        html("".join([
+            T.metric_card("Best trade", money(best), *T.pnl_classes(best)),
+            T.metric_card("Worst trade", money(worst), *T.pnl_classes(worst)),
+            T.metric_card("Avg per trade", money(avg), *T.pnl_classes(avg)),
+        ]))
 
     with st.expander("Per-trade breakdown"):
         st.dataframe(
-            pnl_series.assign(**{"Closed at": pnl_series["Closed at"].dt.strftime("%Y-%m-%d %H:%M")}),
-            width="stretch",
-            hide_index=True,
+            pnl_series.assign(**{
+                "Closed at": pnl_series["Closed at"].dt.strftime("%Y-%m-%d %H:%M")
+            }),
+            width="stretch", hide_index=True,
         )
 
-if stats["rejections_by_rule"]:
-    st.caption("Which rule is doing the work — rejections by rule")
-    rejects = pd.DataFrame(
-        sorted(stats["rejections_by_rule"].items(), key=lambda kv: -kv[1]),
-        columns=["Rule", "Rejections"],
-    )
-    st.bar_chart(rejects.set_index("Rule"), height=200)
+# -------------------------------------------------------------- market
 
-st.divider()
+html(T.section_heading("Market", "market"))
 
-# ---------------------------------------------------------- market state
+market_rows, market_error = safe(get_market_state)
 
-st.subheader("Market")
+if market_rows:
+    def fmt(value, spec, dash="—"):
+        return dash if value is None else format(value, spec)
 
-try:
-    market = get_market_state()
-    market_frame = pd.DataFrame(market)
-    st.dataframe(
-        market_frame.style.format({"Spot": "{:.2f}", "ATM IV": "{:.2%}", "IV Rank": "{:.1f}"}, na_rep="—"),
-        width="stretch",
-        hide_index=True,
-    )
-    if any(row["Source"] == "rv_proxy" for row in market):
+    rows = [[
+        f'<span class="oa-ticker">{T.esc(r["ticker"])}</span>',
+        fmt(r.get("spot"), ",.2f"),
+        fmt(r.get("atm_iv"), ".2%"),
+        fmt(r.get("iv_rank"), ".1f"),
+        T.regime_pill(r.get("regime", "UNKNOWN")),
+        f'<span class="oa-muted">{T.esc(r.get("iv_rank_source", "—"))}</span>',
+    ] for r in market_rows]
+
+    html(T.table(["Ticker", "Spot", "ATM IV", "IV Rank", "Regime", "Source"],
+                 rows, "Market status"))
+
+    if any(r.get("iv_rank_source") == "rv_proxy" for r in market_rows):
         st.caption(
             "IV rank marked `rv_proxy` is a cold-start estimate: today's ATM implied "
             "volatility ranked against the past year of realized volatility. It switches "
             "to a true IV percentile once 20 sessions of history have accumulated."
         )
-except Exception as exc:  # noqa: BLE001
-    st.warning(f"Market data unavailable: {exc}")
+else:
+    html(unavailable(f"Market data could not be fetched — {str(market_error)[:180]}."))
 
-st.divider()
+# ------------------------------------------------------------- journal
 
-# --------------------------------------------------------------- journal
+html(T.section_heading("Trade Journal", "journal"))
 
-st.subheader("Trade journal")
+if payload.source == SOURCE_NONE:
+    st.info(
+        "No journal found. Run `python cron_runner.py --dry-run --force` locally, "
+        "or configure the data branch for a deployed instance."
+    )
 
 tabs = st.tabs(["Recent activity", "Rejections", "Fills & exits", "Raw"])
 events = events_all[:200]
 
+
+def describe(event: dict) -> str:
+    """One line of terminal text for a journal event."""
+    kind = event.get("event_type", "")
+    execution = event.get("execution") or {}
+    spread = event.get("spread") or {}
+    ticker = event.get("ticker", "")
+    if kind == "cycle_summary":
+        return (f"cycle {event.get('run_id', '')[:8]} [{event.get('mode', '?')}] "
+                f"approved={event.get('approved', 0)} rejected={event.get('rejected', 0)} "
+                f"skipped={event.get('skipped', 0)}")
+    if kind in ("trade_approved", "trade_rejected"):
+        return f"{ticker} {event.get('reason', '')}"
+    if kind == "analysis":
+        ctx = event.get("market_context") or {}
+        return (f"{ticker} spot={ctx.get('spot', '?')} iv_rank={ctx.get('iv_rank', '?')} "
+                f"regime={ctx.get('regime', '?')}")
+    if kind == "spread_candidates":
+        return f"{ticker} {event.get('count', 0)} spreads built"
+    if kind == "position_exit":
+        return (f"{ticker} exit — {event.get('exit_reason', '')} "
+                f"realized={money(execution.get('realized_pnl', 0))}")
+    if kind in ("order_filled", "order_submitted", "order_dry_run", "order_failed"):
+        strikes = (f"{spread.get('sell_strike')}/{spread.get('buy_strike')}"
+                   if spread.get("sell_strike") else "")
+        return f"{ticker} {strikes} {execution.get('message', kind)}"
+    return f"{ticker} {event.get('reason') or event.get('error') or kind}"
+
+
 with tabs[0]:
     if not events:
-        st.info("Nothing journalled yet. Run `python cron_runner.py --dry-run --force`.")
+        html(T.terminal([
+            T.terminal_line("", "analysis", "System initialized."),
+            T.terminal_line("", "analysis", "Awaiting first cycle..."),
+        ]))
     else:
-        rows = []
-        for event in events[:40]:
-            rows.append({
-                "Time": event.get("timestamp", "")[:19].replace("T", " "),
-                "Type": event.get("event_type", ""),
-                "Ticker": event.get("ticker", ""),
-                "Detail": (
-                    event.get("reason")
-                    or event.get("exit_reason")
-                    or (event.get("execution") or {}).get("message")
-                    or event.get("error", "")
-                )[:160],
-            })
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        html(T.terminal([
+            T.terminal_line(str(e.get("timestamp", ""))[11:19],
+                            e.get("event_type", ""), describe(e))
+            for e in events[:60]
+        ]))
 
 with tabs[1]:
     rejections = [e for e in events if is_rejection(e)]
-
     if not rejections:
-        st.info(
-            "No rejections recorded yet. Every spread the gate has seen so far "
-            "passed all nine rules."
-        )
+        st.info("No rejections recorded yet. Every spread the gate has seen passed all nine rules.")
     else:
         st.caption(
-            "Every trade the risk gate blocked, with the rule that stopped it and "
-            "the numbers behind the decision. This is the gate doing its job."
+            "Every trade the risk gate blocked, with the rule that stopped it, its "
+            "threshold, and the value that breached it. This is the gate doing its job."
         )
-
-        # Summary table first — scannable at a glance, before the detail.
-        summary_rows = []
-        for event in rejections:
-            spread = event.get("spread") or {}
-            summary_rows.append({
-                "Time": event.get("timestamp", "")[:19].replace("T", " "),
-                "Ticker": event.get("ticker", ""),
-                "Strikes": (
-                    f"{spread.get('sell_strike'):g}/{spread.get('buy_strike'):g}"
-                    if spread.get("sell_strike") is not None
-                    and spread.get("buy_strike") is not None else "—"
-                ),
-                "Credit": spread.get("net_credit"),
-                "Max loss": spread.get("max_loss"),
-                "Blocked by": ", ".join(event.get("failing_rules", [])) or "—",
-            })
-        st.dataframe(pd.DataFrame(summary_rows), width="stretch", hide_index=True)
-
-        st.caption(f"Showing rule-by-rule detail for the {min(15, len(rejections))} most recent")
         for event in rejections[:15]:
             spread = event.get("spread") or {}
-            blocked_by = ", ".join(event.get("failing_rules", [])) or "no spread proposed"
-            label = (
-                f"{event.get('timestamp', '')[:19].replace('T', ' ')} · "
+            failing = [c for c in event.get("checks", []) if not c.get("passed")]
+            title = (
                 f"{event.get('ticker', '?')} "
-                f"{spread.get('sell_strike', '?')}/{spread.get('buy_strike', '?')} — "
-                f"blocked by {blocked_by}"
+                f"{spread.get('sell_strike', '?')}/{spread.get('buy_strike', '?')} · "
+                f"{str(event.get('timestamp', ''))[:19].replace('T', ' ')}"
             )
-            with st.expander(label):
-                st.markdown(f"**Reason:** {rejection_reason(event)}")
-
-                checks = event.get("checks", [])
-                if checks:
-                    st.markdown("**Rule-by-rule**")
-                    for check in checks:
-                        icon = "✅" if check.get("passed") else "❌"
-                        observed = check.get("observed")
-                        limit = check.get("limit")
-                        suffix = (
-                            f"  \n&nbsp;&nbsp;&nbsp;&nbsp;`observed: {observed}` · `limit: {limit}`"
-                            if observed is not None or limit is not None else ""
-                        )
-                        st.markdown(f"{icon} **{check.get('rule')}** — {check.get('detail')}{suffix}")
-                else:
-                    st.caption("No rule-by-rule breakdown recorded for this entry.")
+            if not failing:
+                html(T.rejection_card("—", "No rule detail recorded", title,
+                                      rejection_reason(event), "—", "—"))
+                continue
+            for check in failing:
+                html(T.rejection_card(
+                    check.get("rule", "?").split("_")[0],
+                    check.get("name", check.get("rule", "")),
+                    title,
+                    check.get("detail", rejection_reason(event)),
+                    "—" if check.get("observed") is None else str(check["observed"]),
+                    "—" if check.get("limit") is None else str(check["limit"]),
+                ))
 
 with tabs[2]:
-    trades = [
-        e for e in events
-        if e.get("event_type") in (
-            "order_filled", "order_submitted", "order_dry_run", "position_exit", "order_failed",
-        )
-    ]
+    trades = [e for e in events if e.get("event_type") in (
+        "order_filled", "order_submitted", "order_dry_run", "position_exit", "order_failed")]
     if not trades:
         st.info("No orders or exits recorded yet.")
     else:
@@ -474,28 +633,27 @@ with tabs[2]:
         for event in trades:
             spread = event.get("spread") or {}
             execution = event.get("execution") or {}
-            rows.append({
-                "Time": event.get("timestamp", "")[:19].replace("T", " "),
-                "Type": event.get("event_type"),
-                "Ticker": event.get("ticker"),
-                "Strikes": (
-                    f"{spread.get('sell_strike')}/{spread.get('buy_strike')}"
-                    if spread.get("sell_strike") else execution.get("symbol", "")
-                ),
-                "Qty": execution.get("contracts"),
-                "Limit": execution.get("limit_price"),
-                "Credit": spread.get("net_credit"),
-                "Max loss": spread.get("max_loss"),
-                "Status": execution.get("status"),
-                "Realized": execution.get("realized_pnl"),
-            })
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+            rows.append([
+                T.esc(str(event.get("timestamp", ""))[:19].replace("T", " ")),
+                T.esc(event.get("event_type", "")),
+                f'<span class="oa-ticker">{T.esc(event.get("ticker", ""))}</span>',
+                T.esc(f'{spread.get("sell_strike")}/{spread.get("buy_strike")}'
+                      if spread.get("sell_strike") else execution.get("symbol", "—")),
+                T.esc(execution.get("contracts", "—")),
+                T.esc(spread.get("net_credit", "—")),
+                T.esc(spread.get("max_loss", "—")),
+                T.esc(execution.get("status", "—")),
+            ])
+        html(T.table(["Time", "Event", "Ticker", "Strikes", "Qty", "Credit",
+                      "Max loss", "Status"], rows, "Fills & exits"))
 
 with tabs[3]:
-    st.caption(f"Last 25 raw journal entries from `{config.paths['journal'].name}`")
+    st.caption(f"Last 25 raw journal entries · source: {payload.source}")
     st.json(events[:25], expanded=False)
 
-st.caption(
-    f"Auto-refreshes every {REFRESH_SECONDS}s · "
-    f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+html(
+    f'<div class="oa-sub" style="text-align:center;margin-top:22px">'
+    f'Read-only console · journal source: {T.esc(payload.source)} '
+    f'({T.esc(payload.age_label)}) · '
+    f'{datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S UTC}</div>'
 )

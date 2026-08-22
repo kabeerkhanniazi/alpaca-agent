@@ -157,25 +157,70 @@ command can never place an order.
 ```
 
 A market-status banner at the top shows **OPEN**/**CLOSED** with a live countdown
-to the next bell, then four panels:
+to the next bell, then five panels:
 
-- **Portfolio** — open positions, aggregate Greeks, and headroom bars showing how
+- **Portfolio** — metric cards, the full Greeks row, and headroom bars showing how
   close the book is to the limits that would stop it trading.
-- **Performance** — a one-line trade summary (orders submitted / positions closed
-  / realized P&L), a cumulative realized-P&L curve with best, worst and average
-  trade, and a breakdown of which rule is rejecting the most.
-- **Market** — spot, ATM IV, IV rank and regime per underlying.
-- **Trade journal** — recent activity, fills and exits, raw records, and a
-  **Rejections** tab showing every trade the gate blocked with its full
-  rule-by-rule arithmetic.
+- **Risk Gate** — all nine rules with their live thresholds from
+  `config/risk_config.json`, each marked pass / fail / not-yet-evaluated from the
+  most recent spread the gate saw.
+- **Performance** — win rate, realized P&L, positions closed, orders filled, avg
+  credit, gate approval rate, plus a cumulative realized-P&L curve.
+- **Market** — spot, ATM IV, IV rank and a colour-coded regime pill per underlying.
+- **Trade journal** — a terminal block with four tabs (Recent activity, Rejections,
+  Fills & exits, Raw). The **Rejections** tab leads each entry with the failing rule
+  number, its threshold, and the value that breached it.
 
 The P&L curve plots **realized** P&L only. Marking open positions to market would
 make the line jump on quote noise and would flatter a premium-selling strategy,
 where an open spread looks like a winner right up until it isn't. Dry-run cycles
 are excluded from every count and labelled separately.
 
-The dashboard's pure helpers live in `options_agent/dashboard_utils.py` so they
-are unit-tested without a Streamlit runtime (24 tests).
+### The dashboard is read-only
+
+It is deployed publicly, so nothing on the page can reach the broker. The design
+mockup's `EXECUTE LIVE` and `KILL SWITCH` controls are rendered as **status
+spans, not buttons** — `MODE: DRY-RUN`/`MODE: LIVE` read from the agent's last
+logged cycle, and `KILL-SWITCH: ARMED` with the live drawdown against the 5%
+threshold. The only interactive controls are Refresh, the journal tabs, and the
+chart. `test_no_control_can_reach_the_broker` fails if any other button appears.
+
+### Where the deployed dashboard gets its data
+
+`data/` is gitignored and Streamlit Cloud has an ephemeral filesystem, so a
+deployed instance has no journal of its own. It resolves one in order — local
+file, then the public `data` branch, then a committed snapshot — and always
+reports which source it used and how stale it is. See
+[journal_source.py](options_agent/journal_source.py).
+
+`scripts/push_journal.sh` publishes the journal to that branch each cycle. The
+branch is orphan and every push **amends a single commit and force-pushes**, so a
+week at five-minute cadence leaves one commit rather than ~2000, and `main`'s
+history stays readable. Pushing there does not trigger a redeploy, so the
+dashboard refreshes without an app restart.
+
+If Alpaca is unreachable or credentials are absent, the live panels show a
+neutral "unavailable" card and every journal-derived panel renders normally.
+
+### Design
+
+The visual language is ported from [docs/design/alpaca.html](docs/design/alpaca.html).
+Tailwind could not be used — it ships as a `<script>` tag and Streamlit strips
+those — so every utility is hand-written CSS in
+[dashboard_theme.py](options_agent/dashboard_theme.py), injected once, with fonts
+loaded via `@import` inside the style block. Icons are inline SVG rather than an
+icon font, to avoid a CDN dependency that leaves ligature text visible when it
+fails.
+
+Two accessibility fixes against the mockup: `outline` (#5a5068) scores **2.46:1**
+on the card background and fails WCAG AA, so it is a **border-only token** — no
+text anywhere uses it, enforced by `test_outline_is_never_a_text_colour`. And
+figures use `clamp()` sizing with `min-width: 0`, which is the fix for the
+buying-power value overflowing its card in the mockup.
+
+The dashboard's pure helpers live in `options_agent/dashboard_utils.py` and
+`options_agent/dashboard_theme.py`, so they are unit-tested without a Streamlit
+runtime.
 
 ### Scheduling
 
@@ -194,7 +239,7 @@ than a badly-timed trade — and holidays and half-days are handled for free.
 ## Tests
 
 ```bash
-./venv/bin/python -m pytest tests/ -q                        # 212 tests
+./venv/bin/python -m pytest tests/ -q                        # 270 tests
 ./venv/bin/python -m pytest tests/ -q -m "not integration"   # fully offline
 ```
 
@@ -218,6 +263,8 @@ options_agent/
   iv.py              IV rank, regime, OCC symbol parsing
   state.py           the state dict passed between nodes
   dashboard_utils.py pure helpers for the dashboard (testable without Streamlit)
+  dashboard_theme.py tokens, stylesheet, and HTML component builders
+  journal_source.py  resolves the journal: local -> data branch -> snapshot
   graph.py           LangGraph wiring
   nodes/
     analyst.py             spot, technicals, IV regime
@@ -228,7 +275,7 @@ options_agent/
     executor.py            multi-leg orders, idempotent
     trade_journal.py       JSONL logging + analytics
 config/              risk_config.json, options_config.json
-tests/               212 tests
+tests/               270 tests
 cron_runner.py       one scheduled cycle
 streamlit_app.py     dashboard
 ta-base/             upstream TradingAgents, local reference only (not committed)

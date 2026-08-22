@@ -32,8 +32,8 @@ from options_agent.dashboard_utils import (  # noqa: E402
 from options_agent.nodes.trade_journal import TradeJournal  # noqa: E402
 
 st.set_page_config(
-    page_title="Alpaca Trading Agent",
-    page_icon="📉",
+    page_title="ATA",
+    page_icon="",
     layout="wide",
 )
 
@@ -140,7 +140,7 @@ def render_error(exc: Exception) -> None:
 
 # ----------------------------------------------------------------- header
 
-st.title(" Autonomous Trading Agent")
+st.title(" Alpaca Trading Agent")
 st.caption(
     "Defined-risk credit spreads on SPY, QQQ and IWM. Every position passes a "
     "nine-rule deterministic risk gate — no language model anywhere in the decision path."

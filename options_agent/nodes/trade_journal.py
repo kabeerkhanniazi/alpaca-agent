@@ -186,13 +186,25 @@ class TradeJournal:
         return list(reversed(events))[:limit]
 
     def compute_stats(self, ticker: str | None = None) -> dict[str, Any]:
-        """Headline performance numbers for the dashboard.
+        """Headline performance numbers, computed from this journal's file."""
+        return self.stats_from_events(list(self.read_all()), ticker)
+
+    @staticmethod
+    def stats_from_events(
+        events: list[dict[str, Any]], ticker: str | None = None
+    ) -> dict[str, Any]:
+        """Headline performance numbers for an arbitrary list of events.
+
+        Separated from the file-reading path because the dashboard may be
+        showing a journal fetched from a remote data branch or a committed
+        snapshot rather than the local file — the arithmetic is the same
+        wherever the events came from.
 
         Win rate counts *closed* positions only. An open position has no
         realized outcome, and counting unrealized gains as wins would flatter
         the number in exactly the way a premium-selling strategy is prone to.
         """
-        events = list(self.read_all())
+        events = list(events)
         if ticker:
             events = [e for e in events if e.get("ticker") == ticker]
 

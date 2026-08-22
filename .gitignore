@@ -11,7 +11,10 @@ ta-base/
 
 # Runtime output
 logs/
-data/
+# Runtime data is local-only, except the committed journal snapshot the
+# deployed dashboard falls back to when it cannot reach the live data branch.
+data/*
+!data/snapshot/
 results/
 
 # Python
@@ -24,3 +27,6 @@ __pycache__/
 # WSL / Windows cruft
 *:Zone.Identifier
 .DS_Store
+
+# The design mockup lives at docs/design/alpaca.html; this is the working copy.
+alpaca.html

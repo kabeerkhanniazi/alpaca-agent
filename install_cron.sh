@@ -56,7 +56,7 @@ mkdir -p "${REPO}/logs"
 BLOCK="$(cat <<CRON
 ${MARKER}
 CRON_TZ=America/New_York
-*/5 9-16 * * 1-5 cd ${REPO} && ${REPO}/venv/bin/python cron_runner.py ${MODE} >> ${REPO}/logs/cron.log 2>&1
+*/5 9-16 * * 1-5 cd ${REPO} && ${REPO}/venv/bin/python cron_runner.py ${MODE} >> ${REPO}/logs/cron.log 2>&1; ${REPO}/scripts/push_journal.sh >> ${REPO}/logs/journal_push.log 2>&1
 ${MARKER}-end
 CRON
 )"

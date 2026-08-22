@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Alpaca AI Trading Agent - Hackathon</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Sora:wght@400;600;700;800&amp;family=Space+Grotesk:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "tertiary-fixed-dim": "#ffe04a",
+                        "on-primary-fixed": "#3d0020",
+                        "primary": "#ff2d78",
+                        "on-error-container": "#ffa0a0",
+                        "on-error": "#1a0000",
+                        "secondary-fixed": "#c0fff4",
+                        "on-secondary-container": "#c0fff4",
+                        "inverse-surface": "#e8e0f0",
+                        "surface-variant": "#1e1e30",
+                        "secondary-container": "#004d3d",
+                        "tertiary-fixed": "#fff0c0",
+                        "inverse-primary": "#8c0038",
+                        "primary-container": "#b3004e",
+                        "on-primary": "#1a0010",
+                        "on-secondary-fixed-variant": "#004d4d",
+                        "surface": "#0f0f1a",
+                        "on-surface": "#e8e0f0",
+                        "tertiary-container": "#665200",
+                        "surface-tint": "#ff2d78",
+                        "surface-bright": "#1a1a2e",
+                        "on-tertiary-fixed": "#1a1000",
+                        "tertiary": "#ffe04a",
+                        "error": "#ff4444",
+                        "primary-fixed-dim": "#ff80aa",
+                        "on-secondary": "#001a1a",
+                        "surface-container-low": "#111118",
+                        "secondary": "#00ffcc",
+                        "on-primary-fixed-variant": "#8c0038",
+                        "primary-fixed": "#ffe0ec",
+                        "surface-container-lowest": "#0a0a12",
+                        "on-primary-container": "#ffe0ec",
+                        "background": "#0a0a12",
+                        "on-background": "#e8e0f0",
+                        "on-tertiary": "#1a1000",
+                        "inverse-on-surface": "#0a0a12",
+                        "on-secondary-fixed": "#001a1a",
+                        "on-tertiary-fixed-variant": "#665200",
+                        "surface-container-highest": "#28283e",
+                        "outline-variant": "#302840",
+                        "surface-container": "#141422",
+                        "secondary-fixed-dim": "#00e6b8",
+                        "outline": "#5a5068",
+                        "surface-container-high": "#1e1e30",
+                        "on-tertiary-container": "#fff0c0",
+                        "surface-dim": "#0f0f1a",
+                        "error-container": "#3d0f0f",
+                        "on-surface-variant": "#a098b0"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {},
+                    "fontFamily": {
+                        "headline": ["Sora", "sans-serif"],
+                        "display": ["Sora", "sans-serif"],
+                        "body": ["Inter", "sans-serif"],
+                        "label": ["Space Grotesk", "sans-serif"]
+                    },
+                    "fontSize": {}
+                },
+            },
+        }
+    </script>
+<style>
+        body {
+            background-color: theme('colors.background');
+            color: theme('colors.on-background');
+            font-family: theme('fontFamily.body');
+        }
+        
+        .neon-glow-primary {
+            text-shadow: 0 0 8px currentColor;
+        }
+        
+        .neon-glow-secondary {
+            text-shadow: 0 0 8px rgba(0, 255, 204, 0.6);
+        }
+
+        .neon-border-primary {
+            border: 1px solid rgba(255, 45, 120, 0.5);
+            box-shadow: inset 0 0 12px rgba(255, 45, 120, 0.1);
+        }
+        
+        .neon-border-secondary {
+            border: 1px solid rgba(0, 255, 204, 0.3);
+            box-shadow: inset 0 0 12px rgba(0, 255, 204, 0.05);
+        }
+
+        .glass-card {
+            background: rgba(30, 30, 48, 0.4);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(90, 80, 104, 0.3);
+        }
+
+        .cyber-grid-bg {
+            background-image: 
+                linear-gradient(rgba(0, 255, 204, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 255, 204, 0.03) 1px, transparent 1px);
+            background-size: 30px 30px;
+        }
+
+        .terminal-text {
+            color: #00ff00;
+            text-shadow: 0 0 5px rgba(0, 255, 0, 0.5);
+        }
+
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 1; box-shadow: 0 0 20px rgba(255, 45, 120, 0.4); }
+            50% { opacity: 0.8; box-shadow: 0 0 10px rgba(255, 45, 120, 0.2); }
+        }
+
+        .animate-pulse-glow {
+            animation: pulse-glow 2s infinite;
+        }
+    </style>
+</head>
+<body class="cyber-grid-bg min-h-screen overflow-x-hidden flex">
+<!-- SideNavBar -->
+<nav class="fixed left-0 top-0 h-full flex flex-col justify-between py-6 bg-surface-container-low dark:bg-surface-container-lowest h-screen w-64 border-r border-outline-variant border-r border-primary/30 shadow-[inset_0_0_12px_rgba(255,45,120,0.05)] z-40 hidden md:flex">
+<div>
+<div class="px-6 mb-8 flex items-center gap-3">
+<div class="w-10 h-10 rounded-lg bg-surface-container-high flex items-center justify-center border border-primary/30 shadow-[0_0_10px_rgba(255,45,120,0.2)]">
+<span class="material-symbols-outlined text-primary" style="font-variation-settings: 'FILL' 1;">smart_toy</span>
+</div>
+<div>
+<h1 class="text-xl font-headline font-bold text-primary tracking-tighter">ALPACA AI</h1>
+<p class="text-xs font-label text-secondary tracking-widest">V2.0.4 ACTIVE</p>
+</div>
+</div>
+<div class="flex flex-col gap-1">
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant hover:text-on-surface transition-colors hover:bg-surface-container-high transition-all duration-300" href="#">
+<span class="material-symbols-outlined">hub</span>
+<span class="font-headline text-sm font-semibold">Neural Link</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-primary font-bold bg-primary/10 border-r-2 border-primary shadow-[0_0_8px_currentColor] hover:bg-surface-container-high transition-all duration-300" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">account_balance_wallet</span>
+<span class="font-headline text-sm font-semibold">Portfolio</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant hover:text-on-surface transition-colors hover:bg-surface-container-high transition-all duration-300" href="#">
+<span class="material-symbols-outlined">settings_input_component</span>
+<span class="font-headline text-sm font-semibold">Agent Config</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant hover:text-on-surface transition-colors hover:bg-surface-container-high transition-all duration-300" href="#">
+<span class="material-symbols-outlined">terminal</span>
+<span class="font-headline text-sm font-semibold">Terminal</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 text-on-surface-variant hover:text-on-surface transition-colors hover:bg-surface-container-high transition-all duration-300" href="#">
+<span class="material-symbols-outlined">sensors</span>
+<span class="font-headline text-sm font-semibold">Market Status</span>
+</a>
+</div>
+</div>
+<div class="px-4 flex flex-col gap-4">
+<button class="w-full py-3 bg-surface-container rounded-lg border border-primary/50 text-primary font-headline font-bold text-sm tracking-wider hover:bg-primary/20 transition-all shadow-[0_0_15px_rgba(255,45,120,0.15)] flex justify-center items-center gap-2">
+<span class="material-symbols-outlined text-sm">play_arrow</span> EXECUTE LIVE
+            </button>
+<div class="flex flex-col gap-1 border-t border-outline-variant/50 pt-4">
+<a class="flex items-center gap-3 px-4 py-2 text-on-surface-variant hover:text-on-surface transition-colors" href="#">
+<span class="material-symbols-outlined text-sm">description</span>
+<span class="font-label text-xs">Docs</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2 text-on-surface-variant hover:text-error transition-colors" href="#">
+<span class="material-symbols-outlined text-sm">logout</span>
+<span class="font-label text-xs">Logout</span>
+</a>
+</div>
+</div>
+</nav>
+<!-- Main Content Area -->
+<div class="flex-1 md:ml-64 flex flex-col min-h-screen">
+<!-- TopAppBar -->
+<header class="w-full h-16 sticky top-0 z-50 flex justify-between items-center px-8 bg-surface/80 backdrop-blur-md border-b border-secondary/20 shadow-md">
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-secondary text-2xl drop-shadow-[0_0_5px_rgba(0,255,204,0.5)]">grid_view</span>
+<h2 class="text-2xl font-display font-black text-secondary drop-shadow-[0_0_8px_rgba(0,255,204,0.6)] uppercase tracking-widest">NEURAL COMMAND CENTER</h2>
+</div>
+<nav class="hidden lg:flex items-center gap-8">
+<a class="text-on-surface-variant hover:text-secondary transition-colors font-display text-sm uppercase tracking-widest hover:text-secondary hover:shadow-[0_0_5px_currentColor]" href="#">Mainframe</a>
+<a class="text-secondary border-b-2 border-secondary pb-1 font-display text-sm uppercase tracking-widest hover:text-secondary hover:shadow-[0_0_5px_currentColor]" href="#">Nodes</a>
+<a class="text-on-surface-variant hover:text-secondary transition-colors font-display text-sm uppercase tracking-widest hover:text-secondary hover:shadow-[0_0_5px_currentColor]" href="#">Liquidity</a>
+<a class="text-on-surface-variant hover:text-secondary transition-colors font-display text-sm uppercase tracking-widest hover:text-secondary hover:shadow-[0_0_5px_currentColor]" href="#">Risk</a>
+</nav>
+<div class="flex items-center gap-4">
+<button class="px-4 py-1.5 rounded-full bg-error/10 border border-error/50 text-error font-label text-xs font-bold tracking-wider hover:bg-error/20 transition-colors">KILL SWITCH</button>
+<button class="px-4 py-1.5 rounded-full bg-secondary/10 border border-secondary/50 text-secondary font-label text-xs font-bold tracking-wider hover:bg-secondary/20 transition-colors">RE-SYNC</button>
+<div class="flex gap-2 border-l border-outline-variant pl-4">
+<button class="text-on-surface-variant hover:text-secondary transition-colors"><span class="material-symbols-outlined">notifications</span></button>
+<button class="text-on-surface-variant hover:text-secondary transition-colors"><span class="material-symbols-outlined">settings</span></button>
+</div>
+</div>
+</header>
+<!-- Dashboard Canvas -->
+<main class="flex-1 p-6 lg:p-8 flex flex-col gap-8">
+<!-- Banner Section -->
+<section class="w-full rounded-xl border border-primary/40 bg-surface-container-high/80 backdrop-blur-md overflow-hidden relative shadow-[0_0_30px_rgba(255,45,120,0.1)]">
+<div class="absolute inset-0 bg-gradient-to-r from-primary/10 to-transparent pointer-events-none"></div>
+<div class="flex flex-col md:flex-row items-center justify-between p-6 relative z-10">
+<div class="flex items-center gap-6">
+<div class="w-16 h-16 rounded-full bg-error/20 flex items-center justify-center border-2 border-error animate-pulse-glow shadow-[0_0_20px_rgba(255,68,68,0.5)]">
+<span class="material-symbols-outlined text-error text-3xl">block</span>
+</div>
+<div>
+<h3 class="text-3xl font-headline font-black text-error uppercase tracking-widest neon-glow-primary" style="text-shadow: 0 0 10px rgba(255,68,68,0.6);">MARKET CLOSED</h3>
+<p class="text-on-surface-variant font-body text-sm mt-1">Next session 09:30 -04:00 on Mon 24 Aug. Scheduled cycles no-op until the bell.</p>
+</div>
+</div>
+<div class="mt-4 md:mt-0 text-center md:text-right">
+<p class="text-secondary font-label text-sm uppercase tracking-widest mb-1">Opens in</p>
+<div class="text-4xl font-display font-bold text-on-surface flex items-baseline gap-2">
+<span>2<span class="text-xl text-on-surface-variant">d</span></span>
+<span>3<span class="text-xl text-on-surface-variant">h</span></span>
+<span>15<span class="text-xl text-on-surface-variant">m</span></span>
+</div>
+</div>
+</div>
+</section>
+<!-- Grid Layout -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+<!-- Left Column: Config -->
+<div class="lg:col-span-3 flex flex-col gap-6">
+<div class="glass-card rounded-xl p-6 neon-border-primary h-full">
+<div class="flex items-center gap-3 mb-6 border-b border-outline-variant/50 pb-4">
+<span class="material-symbols-outlined text-primary">settings_applications</span>
+<h3 class="font-headline font-bold text-lg text-primary tracking-wide neon-glow-primary">Agent Config</h3>
+</div>
+<div class="flex flex-col gap-5">
+<div class="group">
+<p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Underlyings</p>
+<p class="text-on-surface font-display text-lg font-semibold group-hover:text-secondary transition-colors">SPY, QQQ, IWM</p>
+</div>
+<div class="group">
+<p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Delta window</p>
+<p class="text-on-surface font-display text-lg font-semibold group-hover:text-secondary transition-colors">-0.2 to -0.15</p>
+</div>
+<div class="group">
+<p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">DTE window</p>
+<p class="text-on-surface font-display text-lg font-semibold group-hover:text-secondary transition-colors">7–14 days</p>
+</div>
+<div class="group">
+<p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Max risk / trade</p>
+<p class="text-tertiary font-display text-xl font-bold">2% of NAV</p>
+</div>
+<div class="mt-4 pt-4 border-t border-outline-variant/30">
+<p class="text-error font-label text-xs uppercase tracking-wider mb-1">Kill-switch</p>
+<p class="text-error font-display text-2xl font-black neon-glow-primary" style="text-shadow: 0 0 10px rgba(255,68,68,0.5);">-5% daily</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Center/Right Column -->
+<div class="lg:col-span-9 flex flex-col gap-8">
+<!-- Portfolio Grid -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+<div class="glass-card rounded-lg p-5 border-l-2 border-l-primary shadow-[inset_0_0_20px_rgba(255,45,120,0.05)] hover:-translate-y-1 transition-transform">
+<div class="flex justify-between items-start mb-2">
+<p class="text-on-surface-variant font-label text-xs uppercase tracking-widest">Net Liquidation</p>
+<span class="material-symbols-outlined text-primary text-sm">account_balance</span>
+</div>
+<h4 class="text-2xl font-display font-bold text-primary neon-glow-primary">$100,000.00</h4>
+</div>
+<div class="glass-card rounded-lg p-5 border-l-2 border-l-secondary shadow-[inset_0_0_20px_rgba(0,255,204,0.05)] hover:-translate-y-1 transition-transform">
+<div class="flex justify-between items-start mb-2">
+<p class="text-on-surface-variant font-label text-xs uppercase tracking-widest">Buying Power</p>
+<span class="material-symbols-outlined text-secondary text-sm">payments</span>
+</div>
+<h4 class="text-2xl font-display font-bold text-on-surface">$400,000.00</h4>
+</div>
+<div class="glass-card rounded-lg p-5 border-l-2 border-l-outline hover:-translate-y-1 transition-transform">
+<div class="flex justify-between items-start mb-2">
+<p class="text-on-surface-variant font-label text-xs uppercase tracking-widest">Daily P&amp;L</p>
+<span class="material-symbols-outlined text-outline text-sm">trending_up</span>
+</div>
+<div class="flex items-baseline gap-2">
+<h4 class="text-2xl font-display font-bold text-on-surface-variant">$0.00</h4>
+<span class="text-xs font-label text-outline">(+0.00%)</span>
+</div>
+</div>
+<div class="glass-card rounded-lg p-5 border-l-2 border-l-tertiary shadow-[inset_0_0_20px_rgba(255,224,74,0.05)] hover:-translate-y-1 transition-transform">
+<div class="flex justify-between items-start mb-2">
+<p class="text-on-surface-variant font-label text-xs uppercase tracking-widest">Open Positions</p>
+<span class="material-symbols-outlined text-tertiary text-sm">inventory_2</span>
+</div>
+<h4 class="text-2xl font-display font-bold text-tertiary">0</h4>
+</div>
+</div>
+<!-- Market Table -->
+<div class="glass-card rounded-xl border border-outline-variant overflow-hidden">
+<div class="bg-surface-container-high px-6 py-4 border-b border-outline-variant/50 flex justify-between items-center">
+<h3 class="font-headline font-semibold text-on-surface tracking-wide">Market Status</h3>
+<button class="text-secondary font-label text-xs hover:underline flex items-center gap-1"><span class="material-symbols-outlined text-sm">refresh</span> Sync</button>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="border-b border-outline-variant/30 text-on-surface-variant font-label text-xs uppercase tracking-wider bg-surface/30">
+<th class="px-6 py-3 font-normal">Ticker</th>
+<th class="px-6 py-3 font-normal">Spot</th>
+<th class="px-6 py-3 font-normal">ATM IV</th>
+<th class="px-6 py-3 font-normal">IV Rank</th>
+<th class="px-6 py-3 font-normal">Regime</th>
+<th class="px-6 py-3 font-normal">Source</th>
+</tr>
+</thead>
+<tbody class="font-body text-sm divide-y divide-outline-variant/20">
+<tr class="hover:bg-surface-container-high/50 transition-colors">
+<td class="px-6 py-4 font-display font-bold text-secondary">SPY</td>
+<td class="px-6 py-4 text-on-surface">765.55</td>
+<td class="px-6 py-4 text-on-surface-variant">11.50%</td>
+<td class="px-6 py-4 text-on-surface">36.5</td>
+<td class="px-6 py-4"><span class="px-2 py-1 rounded bg-secondary/10 text-secondary text-xs font-label">MID_IV</span></td>
+<td class="px-6 py-4 text-outline font-label text-xs">rv_proxy</td>
+</tr>
+<tr class="hover:bg-surface-container-high/50 transition-colors">
+<td class="px-6 py-4 font-display font-bold text-secondary">QQQ</td>
+<td class="px-6 py-4 text-on-surface">713.14</td>
+<td class="px-6 py-4 text-on-surface-variant">19.16%</td>
+<td class="px-6 py-4 text-tertiary">62.3</td>
+<td class="px-6 py-4"><span class="px-2 py-1 rounded bg-tertiary/10 text-tertiary text-xs font-label">HIGH_IV</span></td>
+<td class="px-6 py-4 text-outline font-label text-xs">rv_proxy</td>
+</tr>
+<tr class="hover:bg-surface-container-high/50 transition-colors">
+<td class="px-6 py-4 font-display font-bold text-secondary">IWM</td>
+<td class="px-6 py-4 text-on-surface">299.95</td>
+<td class="px-6 py-4 text-on-surface-variant">15.23%</td>
+<td class="px-6 py-4 text-primary">21.8</td>
+<td class="px-6 py-4"><span class="px-2 py-1 rounded bg-primary/10 text-primary text-xs font-label">LOW_IV</span></td>
+<td class="px-6 py-4 text-outline font-label text-xs">rv_proxy</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<!-- Trade Journal (Terminal) -->
+<div class="rounded-lg bg-[#050508] border border-outline-variant p-4 font-label text-sm shadow-inner relative overflow-hidden">
+<div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-secondary/30 to-transparent"></div>
+<div class="flex items-center gap-4 mb-3 border-b border-outline-variant/30 pb-2">
+<span class="text-on-surface font-semibold">Trade Journal</span>
+<div class="flex gap-4 text-xs text-on-surface-variant">
+<button class="text-secondary border-b border-secondary pb-1">Recent activity</button>
+<button class="hover:text-on-surface">Rejections</button>
+<button class="hover:text-on-surface">Fills &amp; exits</button>
+<button class="hover:text-on-surface">Raw</button>
+</div>
+</div>
+<div class="bg-[#0a0a12] p-3 rounded border border-outline-variant/50 font-mono text-xs">
+<p class="terminal-text">&gt; System initialized.</p>
+<p class="terminal-text">&gt; Awaiting market open...</p>
+<p class="text-secondary/70 mt-2">Nothing journalled yet. Run <code class="bg-surface-container px-1 py-0.5 rounded text-secondary">python cron_runner.py --force</code></p>
+<span class="inline-block w-2 h-4 bg-secondary animate-pulse mt-1"></span>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

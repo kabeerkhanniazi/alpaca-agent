@@ -145,3 +145,25 @@ def test_stats_on_an_empty_journal_do_not_crash(journal):
     assert stats["total_events"] == 0
     assert stats["win_rate"] is None
     assert stats["realized_pnl"] == 0.0
+
+
+def test_a_dry_run_is_not_recorded_as_a_submitted_order(journal):
+    """A simulated trade is not a trade. It must not inflate the headline numbers."""
+    journal.log_execution("r", "SPY", {"net_credit": 60.0, "max_loss": 440.0},
+                          {"success": True, "status": "dry_run", "dry_run": True, "contracts": 4})
+    stats = journal.compute_stats()
+    assert stats["orders_submitted"] == 0
+    assert stats["orders_filled"] == 0
+    assert stats["dry_runs"] == 1
+    assert stats["total_credit"] == 0.0
+
+
+def test_dry_runs_and_real_orders_are_counted_separately(journal):
+    journal.log_execution("r", "SPY", {"net_credit": 60.0, "max_loss": 440.0},
+                          {"success": True, "status": "dry_run", "dry_run": True, "contracts": 4})
+    journal.log_execution("r", "SPY", {"net_credit": 60.0, "max_loss": 440.0},
+                          {"success": True, "status": "filled", "dry_run": False, "contracts": 2})
+    stats = journal.compute_stats()
+    assert stats["dry_runs"] == 1
+    assert stats["orders_filled"] == 1
+    assert stats["total_credit"] == pytest.approx(120.0)

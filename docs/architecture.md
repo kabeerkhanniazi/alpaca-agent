@@ -78,6 +78,24 @@ limit would give away the entire edge; sending the exact mid tends not to fill.
 
 ---
 
+## Why exits are evaluated per spread, not per leg
+
+Alpaca reports each leg of a multi-leg position as its own position row. Judging
+exits on those rows individually is wrong in a specific and dangerous way: the
+short leg decays into profit while its long wing decays into loss, so a 50%
+profit target fires on the short leg alone and closes it — leaving an orphaned
+long put and a position that is no longer a spread.
+
+`group_into_spreads()` groups legs by `(underlying, expiry)`, which is exactly
+what defines a vertical, and P&L is judged on the group. `manage_exits()` then
+closes every leg in the group together.
+
+`test_a_profitable_spread_closes_both_legs` pins this with a short leg at +$420
+and a long leg at −$160: per-leg logic closes one symbol, spread-level logic
+closes both.
+
+---
+
 ## Why exits are market orders while entries are limit orders
 
 Entering is optional. If a limit order does not fill, nothing has been lost —

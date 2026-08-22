@@ -226,6 +226,11 @@ spread must be submitted with a negative limit price. Inverting this would send
 an order willing to pay to open a position that should be collecting.
 Covered by `test_credit_spread_submits_a_negative_limit_price`.
 
+**Exits are evaluated per spread, not per leg.** Alpaca reports each leg as its
+own position. Judged individually, a short leg decaying into profit would hit
+the 50% target and close alone, orphaning its long wing. Legs are grouped by
+`(underlying, expiry)` and closed together.
+
 **Order IDs are deterministic.** `client_order_id` is derived from the trade
 itself — ticker, expiry, both strikes, date, size. If a cycle dies between
 submitting and recording, the next attempt collides with the existing order

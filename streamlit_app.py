@@ -224,7 +224,11 @@ perf[0].metric(
 )
 perf[1].metric("Realized P&L", money(stats["realized_pnl"]))
 perf[2].metric("Positions closed", stats["positions_closed"])
-perf[3].metric("Orders filled", stats["orders_filled"])
+perf[3].metric(
+    "Orders filled",
+    stats["orders_filled"],
+    help=f"{stats['dry_runs']} dry-run cycles are excluded from this count.",
+)
 perf[4].metric("Avg credit", money(stats["avg_credit"]))
 perf[5].metric(
     "Gate approval rate",
@@ -315,7 +319,9 @@ with tabs[1]:
 with tabs[2]:
     trades = [
         e for e in events
-        if e.get("event_type") in ("order_filled", "order_submitted", "position_exit", "order_failed")
+        if e.get("event_type") in (
+            "order_filled", "order_submitted", "order_dry_run", "position_exit", "order_failed",
+        )
     ]
     if not trades:
         st.info("No orders or exits recorded yet.")

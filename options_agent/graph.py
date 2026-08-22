@@ -132,11 +132,27 @@ class OptionsAgentGraph:
             logger.error("Exit management skipped — portfolio unavailable: %s", exc)
             return results
 
-        for position in decide_exits(portfolio, self.config):
-            reason = position.get("exit_reason", "")
-            logger.info("Closing %s: %s", position["symbol"], reason)
-            result = close_position(self.broker, position, dry_run=dry_run)
-            self.journal.log_exit(run_id, position, reason, result)
+        for group in decide_exits(portfolio, self.config):
+            reason = group.get("exit_reason", "")
+            logger.info("Closing %s (%d legs): %s", group["label"], group["leg_count"], reason)
+
+            # Close every leg of the spread. Closing only the profitable leg
+            # would leave the other one stranded and the position no longer a
+            # spread at all.
+            leg_results = [
+                close_position(self.broker, leg, dry_run=dry_run) for leg in group["legs"]
+            ]
+            result = {
+                "success": all(r["success"] for r in leg_results),
+                "dry_run": dry_run,
+                "status": "closed" if all(r["success"] for r in leg_results) else "partial",
+                "symbols": group["symbols"],
+                "legs": leg_results,
+                # P&L is the group's, not any single leg's.
+                "realized_pnl": round(group.get("unrealized_pl") or 0.0, 2),
+                "message": f"Closed {group['leg_count']} leg(s) of {group['label']}.",
+            }
+            self.journal.log_exit(run_id, group, reason, result)
             results.append({**result, "exit_reason": reason})
 
         return results

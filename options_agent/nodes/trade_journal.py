@@ -27,6 +27,7 @@ EVENT_CANDIDATES = "spread_candidates"
 EVENT_APPROVED = "trade_approved"
 EVENT_REJECTED = "trade_rejected"
 EVENT_SUBMITTED = "order_submitted"
+EVENT_DRY_RUN = "order_dry_run"
 EVENT_FILLED = "order_filled"
 EVENT_FAILED = "order_failed"
 EVENT_EXIT = "position_exit"
@@ -123,7 +124,12 @@ class TradeJournal:
         result: dict[str, Any],
     ) -> None:
         status = str(result.get("status", "")).lower()
-        if not result.get("success"):
+        if result.get("dry_run"):
+            # Dry runs get their own event type so they never inflate the
+            # "orders submitted" or credit-collected figures on the dashboard.
+            # A simulated trade is not a trade.
+            event = EVENT_DRY_RUN
+        elif not result.get("success"):
             event = EVENT_FAILED
         elif status in ("filled", "partially_filled"):
             event = EVENT_FILLED
@@ -192,6 +198,7 @@ class TradeJournal:
 
         fills = [e for e in events if e.get("event_type") == EVENT_FILLED]
         submits = [e for e in events if e.get("event_type") == EVENT_SUBMITTED]
+        dry_runs = [e for e in events if e.get("event_type") == EVENT_DRY_RUN]
         rejections = [e for e in events if e.get("event_type") == EVENT_REJECTED]
         approvals = [e for e in events if e.get("event_type") == EVENT_APPROVED]
         exits = [e for e in events if e.get("event_type") == EVENT_EXIT]
@@ -226,6 +233,7 @@ class TradeJournal:
             "rejections": len(rejections),
             "orders_submitted": len(submits) + len(fills),
             "orders_filled": len(fills),
+            "dry_runs": len(dry_runs),
             "positions_closed": len(exits),
             "win_rate": round(len(wins) / len(closed) * 100.0, 2) if closed else None,
             "realized_pnl": round(sum(realized), 2),

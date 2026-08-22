@@ -171,8 +171,55 @@ def _starting_buying_power(config: AgentConfig, current_bp: float) -> float:
     return current_bp
 
 
+def group_into_spreads(positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group individual option legs back into the spreads they belong to.
+
+    Alpaca reports each leg of a multi-leg position as its own position, so a
+    bull put spread comes back as two rows. Evaluating exits per row would be
+    wrong in a specific and dangerous way: the short leg decays into profit
+    while the long leg decays into loss, so a profit target would close the
+    short leg alone and leave an orphaned long put behind.
+
+    Legs are grouped by (underlying, expiry), which is exactly what defines a
+    vertical spread. P&L is then judged on the group as a whole.
+    """
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for position in positions:
+        key = (position.get("underlying", ""), str(position.get("expiry")))
+        group = groups.setdefault(key, {
+            "underlying": position.get("underlying"),
+            "expiry": position.get("expiry"),
+            "dte": position.get("dte"),
+            "legs": [],
+            "symbols": [],
+            "cost_basis": 0.0,
+            "unrealized_pl": 0.0,
+            "market_value": 0.0,
+            "strikes": [],
+        })
+        group["legs"].append(position)
+        group["symbols"].append(position["symbol"])
+        group["cost_basis"] += position.get("cost_basis") or 0.0
+        group["unrealized_pl"] += position.get("unrealized_pl") or 0.0
+        group["market_value"] += position.get("market_value") or 0.0
+        if position.get("strike") is not None:
+            group["strikes"].append(position["strike"])
+
+    for group in groups.values():
+        group["strikes"].sort(reverse=True)
+        group["leg_count"] = len(group["legs"])
+        group["label"] = (
+            f"{group['underlying']} {group['expiry']} "
+            + "/".join(f"{s:g}" for s in group["strikes"])
+        )
+    return list(groups.values())
+
+
 def decide_exits(portfolio: dict[str, Any], config: AgentConfig) -> list[dict[str, Any]]:
-    """Which open positions should be closed this cycle, and why.
+    """Which open spreads should be closed this cycle, and why.
+
+    Operates on whole spreads, never on individual legs — see
+    ``group_into_spreads`` for why that distinction matters.
 
     Three triggers, checked in order of urgency:
 
@@ -190,32 +237,33 @@ def decide_exits(portfolio: dict[str, Any], config: AgentConfig) -> list[dict[st
     dte_floor = int(pm.get("exit_if_dte_below", 2))
 
     exits: list[dict[str, Any]] = []
-    for position in portfolio.get("open_positions", []):
-        dte = position.get("dte")
+    for group in group_into_spreads(portfolio.get("open_positions", [])):
+        dte = group.get("dte")
         if dte is not None and dte <= dte_floor:
-            exits.append({**position, "exit_reason": (
-                f"DTE {dte} at or below the {dte_floor}-day floor. Closing before gamma "
-                "and pin risk take over."
+            exits.append({**group, "exit_reason": (
+                f"DTE {dte} at or below the {dte_floor}-day floor. Closing "
+                f"{group['label']} before gamma and pin risk take over."
             )})
             continue
 
-        cost_basis = abs(position.get("cost_basis") or 0.0)
-        if cost_basis <= 0:
+        # For a net-credit spread the combined cost basis is negative: cash was
+        # received to open. Its magnitude is the credit the exit is judged
+        # against.
+        credit = abs(group.get("cost_basis") or 0.0)
+        if credit <= 0:
             continue
 
-        # For a short position, cost_basis is the credit received and
-        # unrealized_pl rises toward it as the option decays.
-        captured = (position.get("unrealized_pl") or 0.0) / cost_basis
+        captured = (group.get("unrealized_pl") or 0.0) / credit
 
         if captured >= profit_target:
-            exits.append({**position, "exit_reason": (
-                f"Captured {captured:.0%} of the credit, at or past the "
-                f"{profit_target:.0%} profit target."
+            exits.append({**group, "exit_reason": (
+                f"Captured {captured:.0%} of the credit on {group['label']}, at or past "
+                f"the {profit_target:.0%} profit target."
             )})
         elif captured <= loss_limit:
-            exits.append({**position, "exit_reason": (
-                f"Down {captured:.0%} against a {loss_limit:.0%} stop. Cutting before "
-                "the spread reaches max loss."
+            exits.append({**group, "exit_reason": (
+                f"{group['label']} is down {captured:.0%} against a {loss_limit:.0%} stop. "
+                "Cutting before the spread reaches max loss."
             )})
 
     return exits

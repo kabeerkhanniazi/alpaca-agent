@@ -289,3 +289,92 @@ def test_exits_are_journalled(config, journal):
     agent = OptionsAgentGraph(FakeBroker(positions=[Position()]), config, journal)
     agent.manage_exits(dry_run=True)
     assert any(e["event_type"] == "position_exit" for e in journal.read_all())
+
+
+# ------------------------------------------- spread-level exit handling
+
+def _leg(strike, qty, cost_basis, unrealized_pl, days=9):
+    """One leg of an open spread, shaped like a parsed Alpaca position."""
+
+    class Position:
+        symbol = occ_symbol("SPY", date.today() + timedelta(days=days), strike)
+        avg_entry_price = abs(cost_basis) / 100
+        market_value = cost_basis + unrealized_pl
+        asset_class = "us_option"
+
+    Position.qty = qty
+    Position.cost_basis = cost_basis
+    Position.unrealized_pl = unrealized_pl
+    Position.unrealized_plpc = unrealized_pl / abs(cost_basis) if cost_basis else 0
+    Position.current_price = abs(Position.market_value) / 100
+    return Position()
+
+
+def test_a_profitable_spread_closes_both_legs(config, journal):
+    """The orphan-leg trap.
+
+    A short leg decays into profit while its long wing decays into loss. Judged
+    per-leg, the short would hit the profit target alone and be closed, leaving
+    a stray long put. Both legs must go together.
+    """
+    short_leg = _leg(753.0, qty=-4, cost_basis=-684.0, unrealized_pl=420.0)
+    long_leg = _leg(748.0, qty=4, cost_basis=436.0, unrealized_pl=-160.0)
+
+    broker = FakeBroker(positions=[short_leg, long_leg])
+    agent = OptionsAgentGraph(broker, config, journal)
+    exits = agent.manage_exits(dry_run=False)
+
+    assert len(exits) == 1, "the two legs are one spread, not two exits"
+    assert set(broker.closed) == {short_leg.symbol, long_leg.symbol}
+
+
+def test_exit_pnl_is_measured_on_the_whole_spread(config, journal):
+    """Net P&L is +$260, not the short leg's +$420."""
+    broker = FakeBroker(positions=[
+        _leg(753.0, qty=-4, cost_basis=-684.0, unrealized_pl=420.0),
+        _leg(748.0, qty=4, cost_basis=436.0, unrealized_pl=-160.0),
+    ])
+    agent = OptionsAgentGraph(broker, config, journal)
+    exits = agent.manage_exits(dry_run=True)
+
+    assert exits[0]["realized_pnl"] == pytest.approx(260.0, abs=0.01)
+
+
+def test_a_spread_below_the_profit_target_is_left_alone(config, journal):
+    """Net capture here is 10% of the credit — nowhere near the 50% target."""
+    broker = FakeBroker(positions=[
+        _leg(753.0, qty=-4, cost_basis=-248.0, unrealized_pl=60.0),
+        _leg(748.0, qty=4, cost_basis=0.0, unrealized_pl=-35.0),
+    ])
+    agent = OptionsAgentGraph(broker, config, journal)
+
+    assert agent.manage_exits(dry_run=True) == []
+    assert broker.closed == []
+
+
+def test_spreads_on_different_expiries_are_separate_positions(config, journal):
+    """Grouping is by (underlying, expiry); two expiries are two spreads."""
+    from options_agent.nodes.position_manager import group_into_spreads, parse_position
+
+    positions = [
+        parse_position(_leg(753.0, -4, -684.0, 420.0, days=9)),
+        parse_position(_leg(748.0, 4, 436.0, -160.0, days=9)),
+        parse_position(_leg(750.0, -4, -600.0, 100.0, days=12)),
+        parse_position(_leg(745.0, 4, 400.0, -40.0, days=12)),
+    ]
+    groups = group_into_spreads(positions)
+    assert len(groups) == 2
+    assert all(group["leg_count"] == 2 for group in groups)
+
+
+def test_a_losing_spread_is_stopped_out(config, journal):
+    """Down more than the credit received: cut before it reaches max loss."""
+    broker = FakeBroker(positions=[
+        _leg(753.0, qty=-4, cost_basis=-248.0, unrealized_pl=-400.0),
+        _leg(748.0, qty=4, cost_basis=0.0, unrealized_pl=100.0),
+    ])
+    agent = OptionsAgentGraph(broker, config, journal)
+    exits = agent.manage_exits(dry_run=True)
+
+    assert len(exits) == 1
+    assert "stop" in exits[0]["exit_reason"]

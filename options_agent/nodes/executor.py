@@ -24,9 +24,6 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from alpaca.trading.enums import OrderClass, OrderSide, PositionIntent, TimeInForce
-from alpaca.trading.requests import LimitOrderRequest, OptionLegRequest
-
 from ..config import AgentConfig
 from ..state import OptionsAgentState
 
@@ -82,37 +79,42 @@ def build_spread_order(
     contracts: int,
     client_order_id: str,
     config: AgentConfig,
-) -> LimitOrderRequest:
+) -> dict[str, Any]:
     """Construct the two-leg limit order for a bull put spread.
 
-    Leg one sells the near strike (``SELL_TO_OPEN``), leg two buys the far one
-    (``BUY_TO_OPEN``). Explicit position intents keep Alpaca from interpreting
+    Leg one sells the near strike (``sell_to_open``), leg two buys the far one
+    (``buy_to_open``). Explicit position intents keep Alpaca from interpreting
     the legs as closing something else.
+
+    Every scalar is rendered as a string because that is what the CLI's flags
+    and the multi-leg ``legs`` payload expect; passing numbers gets them
+    stringified inconsistently at the boundary.
     """
     tif = str(config.execution.get("time_in_force", "day")).lower()
-    time_in_force = TimeInForce.DAY if tif == "day" else TimeInForce.GTC
+    time_in_force = "day" if tif == "day" else "gtc"
 
-    return LimitOrderRequest(
-        qty=contracts,
-        order_class=OrderClass.MLEG,
-        time_in_force=time_in_force,
-        client_order_id=client_order_id,
-        limit_price=compute_limit_price(spread, config),
-        legs=[
-            OptionLegRequest(
-                symbol=spread["sell_symbol"],
-                ratio_qty=1,
-                side=OrderSide.SELL,
-                position_intent=PositionIntent.SELL_TO_OPEN,
-            ),
-            OptionLegRequest(
-                symbol=spread["buy_symbol"],
-                ratio_qty=1,
-                side=OrderSide.BUY,
-                position_intent=PositionIntent.BUY_TO_OPEN,
-            ),
+    return {
+        "qty": str(contracts),
+        "order_class": "mleg",
+        "type": "limit",
+        "time_in_force": time_in_force,
+        "client_order_id": client_order_id,
+        "limit_price": str(compute_limit_price(spread, config)),
+        "legs": [
+            {
+                "symbol": spread["sell_symbol"],
+                "ratio_qty": "1",
+                "side": "sell",
+                "position_intent": "sell_to_open",
+            },
+            {
+                "symbol": spread["buy_symbol"],
+                "ratio_qty": "1",
+                "side": "buy",
+                "position_intent": "buy_to_open",
+            },
         ],
-    )
+    }
 
 
 def execute_spread(
@@ -222,7 +224,7 @@ def close_position(broker, position: dict[str, Any], dry_run: bool = True) -> di
         }
 
     try:
-        order = broker.trading.close_position(symbol)
+        order = broker.close_position(symbol)
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to close %s: %s", symbol, exc)
         return {

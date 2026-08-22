@@ -1,5 +1,7 @@
-# Broker + market data
-alpaca-py>=0.44.0
+# Broker + market data: Alpaca's official CLI (`alpaca`), installed separately with
+#   go install github.com/alpacahq/cli/cmd/alpaca@latest
+# The alpaca-py SDK is deliberately absent — the hackathon requires Alpaca's MCP
+# server or CLI tools, and a direct SDK dependency does not satisfy that.
 
 # Graph orchestration (deterministic nodes; no LLM in this agent)
 langgraph>=1.2.0

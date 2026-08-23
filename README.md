@@ -112,17 +112,35 @@ one it used**:
 
 ## Setup
 
+All Alpaca access goes through **Alpaca's official CLI**, not the `alpaca-py`
+SDK — the hackathon requires projects to use Alpaca's MCP server or its CLI
+tools. Install the CLI first:
+
+```bash
+go install github.com/alpacahq/cli/cmd/alpaca@latest
+```
+
+That puts the binary in `~/go/bin`. Then:
+
 ```bash
 git clone <your-repo-url> && cd alpaca-agent
 python -m venv venv && ./venv/bin/pip install -r requirements.txt
-cp .env.example .env      # then fill in your Alpaca paper keys
+cp .env-example .env      # then fill in your Alpaca paper keys
 ```
 
-The account needs **options trading level 3** for spreads. Verify with:
+The CLI reads `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` from the environment and
+defaults to paper trading, so no `alpaca profile login` is needed and no
+credentials are written to disk — which is what makes the cron path work.
+
+The account needs **options trading level 3** for spreads. Verify the CLI, the
+credentials, and the account level in one step:
 
 ```bash
-./venv/bin/python -c "from options_agent.config import load_config; from options_agent.broker import Broker; a=Broker.from_config(load_config()).get_account(); print(a.equity, a.options_trading_level)"
+./venv/bin/python check_credentials.py
 ```
+
+> The CLI is in Alpha Preview: commands, flags, and output formats can change
+> between releases. This project was built and verified against **v0.0.13**.
 
 ### Data feed note
 
@@ -131,6 +149,11 @@ the `indicative` feed for option chains. Recent SIP data and the OPRA options
 feed both require a paid subscription (OPRA additionally requires a signed
 agreement). Both feed choices are set in one place —
 [`options_agent/broker.py`](options_agent/broker.py) — so upgrading is a two-line change.
+
+The options feed is passed explicitly on every call rather than left to default:
+the CLI's own default is `opra`, and an account without a signed OPRA agreement
+gets a `403 OPRA agreement is not signed` rather than a silent downgrade to the
+free feed.
 
 ---
 

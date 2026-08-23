@@ -9,7 +9,6 @@ description = "Autonomous defined-risk options trading agent for Alpaca"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "alpaca-py>=0.44.0",
     "langgraph>=1.2.0",
     "pandas>=2.2.0",
     "numpy>=1.26.0",

@@ -6,7 +6,6 @@ Everything runs against a fake broker. No test in this file can reach Alpaca.
 from __future__ import annotations
 
 import pytest
-from alpaca.trading.enums import OrderClass, OrderSide, PositionIntent
 
 from options_agent.nodes.executor import (
     build_client_order_id,
@@ -92,36 +91,49 @@ def test_limit_price_never_goes_to_zero_or_positive(config):
 
 def test_order_is_a_two_leg_mleg_order(spread, config):
     order = build_spread_order(spread, 4, "cid", config)
-    assert order.order_class == OrderClass.MLEG
-    assert len(order.legs) == 2
-    assert order.qty == 4
+    assert order["order_class"] == "mleg"
+    assert len(order["legs"]) == 2
+    assert order["qty"] == "4"
 
 
 def test_short_leg_sells_the_near_strike(spread, config):
     order = build_spread_order(spread, 4, "cid", config)
-    sell_leg = next(leg for leg in order.legs if leg.side == OrderSide.SELL)
-    assert sell_leg.symbol == spread["sell_symbol"]
-    assert sell_leg.position_intent == PositionIntent.SELL_TO_OPEN
+    sell_leg = next(leg for leg in order["legs"] if leg["side"] == "sell")
+    assert sell_leg["symbol"] == spread["sell_symbol"]
+    assert sell_leg["position_intent"] == "sell_to_open"
 
 
 def test_long_leg_buys_the_protective_strike(spread, config):
     order = build_spread_order(spread, 4, "cid", config)
-    buy_leg = next(leg for leg in order.legs if leg.side == OrderSide.BUY)
-    assert buy_leg.symbol == spread["buy_symbol"]
-    assert buy_leg.position_intent == PositionIntent.BUY_TO_OPEN
+    buy_leg = next(leg for leg in order["legs"] if leg["side"] == "buy")
+    assert buy_leg["symbol"] == spread["buy_symbol"]
+    assert buy_leg["position_intent"] == "buy_to_open"
 
 
 def test_legs_are_equally_weighted(spread, config):
     """A vertical spread is one-for-one; unequal ratios would be a different trade."""
     order = build_spread_order(spread, 4, "cid", config)
-    assert {leg.ratio_qty for leg in order.legs} == {1}
+    assert {leg["ratio_qty"] for leg in order["legs"]} == {"1"}
 
 
 def test_both_legs_go_in_one_order(spread, config):
     """Legging in separately risks a fill on the short side alone — a naked put."""
     order = build_spread_order(spread, 4, "cid", config)
-    symbols = {leg.symbol for leg in order.legs}
+    symbols = {leg["symbol"] for leg in order["legs"]}
     assert symbols == {spread["sell_symbol"], spread["buy_symbol"]}
+
+
+def test_credit_spread_submits_as_a_credit(spread, config):
+    """The sign convention, pinned at the order-construction boundary.
+
+    Alpaca reads a negative multi-leg limit price as a credit and a positive one
+    as a debit. Inverting this would submit an order willing to *pay* to open a
+    position that should collect, so it is asserted on the exact string that
+    reaches the CLI rather than on the intermediate float.
+    """
+    order = build_spread_order(spread, 4, "cid", config)
+    assert order["limit_price"].startswith("-")
+    assert float(order["limit_price"]) < 0
 
 
 # ------------------------------------------------------- idempotency
